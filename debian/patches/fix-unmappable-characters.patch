@@ -3,7 +3,7 @@ Author: Emmanuel Bourg <ebourg@apache.org>
 Forwarded: not-needed
 --- a/src/main/java/org/apache/maven/plugins/javadoc/JavadocUtil.java
 +++ b/src/main/java/org/apache/maven/plugins/javadoc/JavadocUtil.java
-@@ -569,7 +569,7 @@
+@@ -560,7 +560,7 @@
       * </tr>
       * <tr>
       * <td>IBM 1.5 (French JVM)</td>

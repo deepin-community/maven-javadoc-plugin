@@ -19,7 +19,10 @@ package org.apache.maven.plugins.javadoc;
  * under the License.
  */
 
+import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.ClassUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.maven.archiver.MavenArchiver;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.ArtifactUtils;
 import org.apache.maven.artifact.handler.ArtifactHandler;
@@ -53,6 +56,7 @@ import org.apache.maven.plugins.javadoc.options.io.xpp3.JavadocOptionsXpp3Writer
 import org.apache.maven.plugins.javadoc.resolver.JavadocBundle;
 import org.apache.maven.plugins.javadoc.resolver.ResourceResolver;
 import org.apache.maven.plugins.javadoc.resolver.SourceResolverConfig;
+import org.apache.maven.project.DefaultProjectBuildingRequest;
 import org.apache.maven.project.MavenProject;
 import org.apache.maven.project.ProjectBuilder;
 import org.apache.maven.project.ProjectBuildingException;
@@ -60,18 +64,18 @@ import org.apache.maven.project.ProjectBuildingRequest;
 import org.apache.maven.reporting.MavenReportException;
 import org.apache.maven.settings.Proxy;
 import org.apache.maven.settings.Settings;
-import org.apache.maven.shared.artifact.DefaultArtifactCoordinate;
+import org.apache.maven.shared.transfer.artifact.DefaultArtifactCoordinate;
 import org.apache.maven.shared.artifact.filter.resolve.AndFilter;
 import org.apache.maven.shared.artifact.filter.resolve.PatternExclusionsFilter;
 import org.apache.maven.shared.artifact.filter.resolve.PatternInclusionsFilter;
 import org.apache.maven.shared.artifact.filter.resolve.ScopeFilter;
 import org.apache.maven.shared.artifact.filter.resolve.TransformableFilter;
-import org.apache.maven.shared.artifact.resolve.ArtifactResolver;
-import org.apache.maven.shared.artifact.resolve.ArtifactResolverException;
-import org.apache.maven.shared.artifact.resolve.ArtifactResult;
-import org.apache.maven.shared.dependencies.DefaultDependableCoordinate;
-import org.apache.maven.shared.dependencies.resolve.DependencyResolver;
-import org.apache.maven.shared.dependencies.resolve.DependencyResolverException;
+import org.apache.maven.shared.transfer.artifact.resolve.ArtifactResolver;
+import org.apache.maven.shared.transfer.artifact.resolve.ArtifactResolverException;
+import org.apache.maven.shared.transfer.artifact.resolve.ArtifactResult;
+import org.apache.maven.shared.transfer.dependencies.DefaultDependableCoordinate;
+import org.apache.maven.shared.transfer.dependencies.resolve.DependencyResolver;
+import org.apache.maven.shared.transfer.dependencies.resolve.DependencyResolverException;
 import org.apache.maven.shared.invoker.MavenInvocationException;
 import org.apache.maven.toolchain.Toolchain;
 import org.apache.maven.toolchain.ToolchainManager;
@@ -81,7 +85,11 @@ import org.codehaus.plexus.archiver.UnArchiver;
 import org.codehaus.plexus.archiver.manager.ArchiverManager;
 import org.codehaus.plexus.archiver.manager.NoSuchArchiverException;
 import org.codehaus.plexus.components.io.fileselectors.IncludeExcludeFileSelector;
+import org.codehaus.plexus.languages.java.jpms.JavaModuleDescriptor;
 import org.codehaus.plexus.languages.java.jpms.LocationManager;
+import org.codehaus.plexus.languages.java.jpms.ModuleNameSource;
+import org.codehaus.plexus.languages.java.jpms.ResolvePathRequest;
+import org.codehaus.plexus.languages.java.jpms.ResolvePathResult;
 import org.codehaus.plexus.languages.java.jpms.ResolvePathsRequest;
 import org.codehaus.plexus.languages.java.jpms.ResolvePathsResult;
 import org.codehaus.plexus.languages.java.version.JavaVersion;
@@ -89,7 +97,6 @@ import org.codehaus.plexus.util.DirectoryScanner;
 import org.codehaus.plexus.util.FileUtils;
 import org.codehaus.plexus.util.IOUtil;
 import org.codehaus.plexus.util.ReaderFactory;
-import org.codehaus.plexus.util.StringUtils;
 import org.codehaus.plexus.util.WriterFactory;
 import org.codehaus.plexus.util.cli.CommandLineException;
 import org.codehaus.plexus.util.cli.CommandLineUtils;
@@ -98,23 +105,24 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.io.Writer;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Calendar;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -125,12 +133,14 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.StringTokenizer;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
+import static org.apache.commons.lang3.SystemUtils.isJavaVersionAtLeast;
 import static org.apache.maven.plugins.javadoc.JavadocUtil.toRelative;
 import static org.apache.maven.plugins.javadoc.JavadocUtil.toList;
 import static org.apache.maven.plugins.javadoc.JavadocUtil.isEmpty;
@@ -141,8 +151,7 @@ import static org.apache.maven.plugins.javadoc.JavadocUtil.isNotEmpty;
  *
  * @author <a href="mailto:brett@apache.org">Brett Porter</a>
  * @author <a href="mailto:vincent.siveton@gmail.com">Vincent Siveton</a>
- * @version $Id: AbstractJavadocMojo.java 1801354 2017-07-09 08:49:46Z rfscholte $
- * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html">
+ * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html">
  *      The Java API Documentation Generator, 7</a>
  * @since 2.0
  */
@@ -166,43 +175,6 @@ public abstract class AbstractJavadocMojo
      * @since 2.7
      */
     public static final String TEST_JAVADOC_RESOURCES_ATTACHMENT_CLASSIFIER = "test-javadoc-resources";
-
-    /**
-     * The default Javadoc API urls according the
-     * <a href="http://www.oracle.com/technetwork/java/javase/documentation/api-jsp-136079.html">Sun API
-     * Specifications</a>:
-     * <pre>
-     * &lt;javaApiLinks&gt;
-     *   &lt;property&gt;
-     *     &lt;name&gt;api_1.3&lt;/name&gt;
-     *     &lt;value&gt;http://docs.oracle.com/javase/1.3/docs/api/&lt;/value&gt;
-     *   &lt;/property&gt;
-     *   &lt;property&gt;
-     *     &lt;name&gt;api_1.4&lt;/name&gt;
-     *     &lt;value&gt;http://docs.oracle.com/javase/1.4.2/docs/api/&lt;/value&gt;
-     *   &lt;/property&gt;
-     *   &lt;property&gt;
-     *     &lt;name&gt;api_1.5&lt;/name&gt;
-     *     &lt;value&gt;http://docs.oracle.com/javase/1.5.0/docs/api/&lt;/value&gt;
-     *   &lt;/property&gt;
-     *   &lt;property&gt;
-     *     &lt;name&gt;api_1.6&lt;/name&gt;
-     *     &lt;value&gt;http://docs.oracle.com/javase/6/docs/api/&lt;/value&gt;
-     *   &lt;/property&gt;
-     *   &lt;property&gt;
-     *     &lt;name&gt;api_1.7&lt;/name&gt;
-     *     &lt;value&gt;http://docs.oracle.com/javase/7/docs/api/&lt;/value&gt;
-     *   &lt;/property&gt;
-     *   &lt;property&gt;
-     *     &lt;name&gt;api_1.8&lt;/name&gt;
-     *     &lt;value&gt;http://docs.oracle.com/javase/8/docs/api/&lt;/value&gt;
-     *   &lt;/property&gt;
-     * &lt;/javaApiLinks&gt;
-     * </pre>
-     *
-     * @since 2.6
-     */
-    public static final Properties DEFAULT_JAVA_API_LINKS = new Properties();
 
     /**
      * The Javadoc script file name when <code>debug</code> parameter is on, i.e. javadoc.bat or javadoc.sh
@@ -248,9 +220,13 @@ public abstract class AbstractJavadocMojo
      */
     private static final String RESOURCE_CSS_DIR = RESOURCE_DIR + "/css";
 
+    private static final String PACKAGE_LIST = "package-list";
+    private static final String ELEMENT_LIST = "element-list";
+
+
     /**
      * For Javadoc options appears since Java 1.4.
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.1.html#summary">
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.1.html#summary">
      * What's New in Javadoc 1.4</a>
      *
      * @since 2.1
@@ -260,7 +236,7 @@ public abstract class AbstractJavadocMojo
     /**
      * For Javadoc options appears since Java 1.4.2.
      * See <a
-     * href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.2.html#commandlineoptions">
+     * href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.2.html#commandlineoptions">
      * What's New in Javadoc 1.4.2</a>
      *
      * @since 2.1
@@ -270,7 +246,7 @@ public abstract class AbstractJavadocMojo
     /**
      * For Javadoc options appears since Java 5.0.
      * See <a
-     * href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.5.0.html#commandlineoptions">
+     * href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.5.0.html#commandlineoptions">
      * What's New in Javadoc 5.0</a>
      *
      * @since 2.1
@@ -279,7 +255,7 @@ public abstract class AbstractJavadocMojo
 
     /**
      * For Javadoc options appears since Java 6.0.
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/index.html">
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/index.html">
      * Javadoc Technology</a>
      *
      * @since 2.4
@@ -288,7 +264,7 @@ public abstract class AbstractJavadocMojo
 
     /**
      * For Javadoc options appears since Java 8.0.
-     * See <a href="http://docs.oracle.com/javase/8/docs/technotes/guides/javadoc/index.html">
+     * See <a href="https://docs.oracle.com/javase/8/docs/technotes/guides/javadoc/index.html">
      * Javadoc Technology</a>
      *
      * @since 3.0.0
@@ -296,7 +272,7 @@ public abstract class AbstractJavadocMojo
     private static final JavaVersion SINCE_JAVADOC_1_8 = JavaVersion.parse( "1.8" );
 
     /**
-     * 
+     *
      */
     private static final JavaVersion JAVA_VERSION = JavaVersion.JAVA_SPECIFICATION_VERSION;
 
@@ -335,6 +311,8 @@ public abstract class AbstractJavadocMojo
     /** */
     @Component
     private ToolchainManager toolchainManager;
+
+    final LocationManager locationManager = new LocationManager();
 
     // ----------------------------------------------------------------------
     // Mojo parameters
@@ -384,9 +362,9 @@ public abstract class AbstractJavadocMojo
     private File javadocDirectory;
 
     /**
-     * Set an additional option(s) on the command line. This value should include quotes as necessary for
-     * parameters that include spaces. Useful for a custom doclet.
-     * 
+     * Set an additional option(s) on the command line. All input will be passed as-is to the
+     * {@code @options} file. You must take care of quoting and escaping. Useful for a custom doclet.
+     *
      * @since 3.0.0
      */
     @Parameter
@@ -398,11 +376,11 @@ public abstract class AbstractJavadocMojo
      * <pre>
      * &lt;additionalJOption&gt;-J-Xss128m&lt;/additionalJOption&gt;
      * </pre>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#J">Jflag</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#J">Jflag</a>.
      * <br/>
      * See <a href="http://java.sun.com/javase/technologies/hotspot/vmoptions.jsp">vmoptions</a>.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/net/properties.html">Networking
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/net/properties.html">Networking
      * Properties</a>.
      *
      * @since 2.3
@@ -438,7 +416,7 @@ public abstract class AbstractJavadocMojo
      * &lt;/resourcesArtifacts&gt;
      * </pre>
      * <br/>
-     * See <a href="./apidocs/org/apache/maven/plugin/javadoc/options/ResourcesArtifact.html">Javadoc</a>.
+     * See <a href="./apidocs/org/apache/maven/plugins/javadoc/options/ResourcesArtifact.html">Javadoc</a>.
      * <br/>
      *
      * @since 2.5
@@ -517,7 +495,7 @@ public abstract class AbstractJavadocMojo
 
     /**
      * Specifies to use the
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#standard">
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#standard">
      * options provided by the Standard Doclet</a> for a custom doclet.
      * <br>
      * Example:
@@ -552,6 +530,7 @@ public abstract class AbstractJavadocMojo
      * The added Javadoc <code>-link</code> parameter will be <code>http://commons.apache.org/lang/apidocs</code>.
      *
      * @see #links
+     * @see #dependencyLinks
      * @since 2.6
      */
     @Parameter( property = "detectLinks", defaultValue = "false" )
@@ -560,7 +539,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Detect the links for all modules defined in the project.
      * <br/>
-     * If {@link #reactorProjects} is defined in a non-aggregator way, it generates default offline links
+     * If {@code reactorProjects} is defined in a non-aggregator way, it generates default offline links
      * between modules based on the defined project's urls. For instance, if a parent project has two projects
      * <code>module1</code> and <code>module2</code>, the <code>-linkoffline</code> will be:
      * <br/>
@@ -577,37 +556,35 @@ public abstract class AbstractJavadocMojo
     private boolean detectOfflineLinks;
 
     /**
-     * Detect the Java API link for the current build, i.e. <code>http://docs.oracle.com/javase/1.4.2/docs/api/</code>
+     * Detect the Java API link for the current build, i.e. <code>https://docs.oracle.com/javase/1.4.2/docs/api/</code>
      * for Java source 1.4.
      * <br/>
      * By default, the goal detects the Javadoc API link depending the value of the <code>source</code>
      * parameter in the <code>org.apache.maven.plugins:maven-compiler-plugin</code>
      * (defined in <code>${project.build.plugins}</code> or in <code>${project.build.pluginManagement}</code>),
-     * or try to compute it from the {@link #javadocExecutable} version.
-     * <br/>
-     * See
-     * <a href="./apidocs/org/apache/maven/plugin/javadoc/AbstractJavadocMojo.html#DEFAULT_JAVA_API_LINKS">Javadoc</a>
-     * for the default values.
-     * <br/>
+     * or try to compute it from the {@code javadocExecutable} version.
      *
      * @see #links
      * @see #javaApiLinks
-     * @see #DEFAULT_JAVA_API_LINKS
      * @since 2.6
      */
     @Parameter( property = "detectJavaApiLink", defaultValue = "true" )
     private boolean detectJavaApiLink;
 
     /**
-     * Use this parameter <b>only</b> if the <a href="http://java.sun.com/reference/api/index.html">Sun Javadoc API</a>
-     * urls have been changed or to use custom urls for Javadoc API url.
-     * <br/>
-     * See
-     * <a href="./apidocs/org/apache/maven/plugin/javadoc/AbstractJavadocMojo.html#DEFAULT_JAVA_API_LINKS">Javadoc</a>
-     * for the default values.
-     * <br/>
+     * Use this parameter <b>only</b> if if you want to override the default URLs.
      *
-     * @see #DEFAULT_JAVA_API_LINKS
+     * The key should match {@code api_x}, where {@code x} matches the Java version.
+     *
+     *  For example:
+     *  <dl>
+     *   <dt>api_1.5</dt>
+     *   <dd>https://docs.oracle.com/javase/1.5.0/docs/api/</dd>
+     *   <dt>api_1.8<dt>
+     *   <dd>https://docs.oracle.com/javase/8/docs/api/</dd>
+     *   <dt>api_9</dd>
+     *   <dd>https://docs.oracle.com/javase/9/docs/api/</dd>
+     * </dl>
      * @since 2.6
      */
     @Parameter( property = "javaApiLinks" )
@@ -630,9 +607,8 @@ public abstract class AbstractJavadocMojo
      * Specifies the paths where the boot classes reside. The <code>bootclasspath</code> can contain multiple paths
      * by separating them with a colon (<code>:</code>) or a semi-colon (<code>;</code>).
      * <br/>
-     * See <a
-     * href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#bootclasspath">bootclasspath</a>.
-     * <br/>
+     * See <a href=
+     *    "https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#bootclasspath">bootclasspath</a>.
      *
      * @since 2.5
      */
@@ -642,8 +618,8 @@ public abstract class AbstractJavadocMojo
     /**
      * Specifies the artifacts where the boot classes reside.
      * <br/>
-     * See <a
-     * href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#bootclasspath">bootclasspath</a>.
+     * See <a href=
+     *   "https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#bootclasspath">bootclasspath</a>.
      * <br/>
      * Example:
      * <pre>
@@ -656,7 +632,7 @@ public abstract class AbstractJavadocMojo
      * &lt;/bootclasspathArtifacts&gt;
      * </pre>
      * <br/>
-     * See <a href="./apidocs/org/apache/maven/plugin/javadoc/options/BootclasspathArtifact.html">Javadoc</a>.
+     * See <a href="./apidocs/org/apache/maven/plugins/javadoc/options/BootclasspathArtifact.html">Javadoc</a>.
      * <br/>
      *
      * @since 2.5
@@ -667,10 +643,10 @@ public abstract class AbstractJavadocMojo
     /**
      * Uses the sentence break iterator to determine the end of the first sentence.
      * <br/>
-     * See <a
-     * href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#breakiterator">breakiterator</a>.
+     * See <a href=
+     * "https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#breakiterator">breakiterator</a>.
      * <br/>
-     * Since <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
+     * Since <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
      * 1.4</a>.
      * <br/>
      */
@@ -680,7 +656,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Specifies the class file that starts the doclet used in generating the documentation.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#doclet">doclet</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#doclet">doclet</a>.
      */
     @Parameter( property = "doclet" )
     private String doclet;
@@ -690,7 +666,7 @@ public abstract class AbstractJavadocMojo
      * option).
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#docletpath">docletpath</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#docletpath">docletpath</a>.
      * <br/>
      * Example:
      * <pre>
@@ -701,7 +677,7 @@ public abstract class AbstractJavadocMojo
      * &lt;/docletArtifact&gt;
      * </pre>
      * <br/>
-     * See <a href="./apidocs/org/apache/maven/plugin/javadoc/options/DocletArtifact.html">Javadoc</a>.
+     * See <a href="./apidocs/org/apache/maven/plugins/javadoc/options/DocletArtifact.html">Javadoc</a>.
      * <br/>
      */
     @Parameter( property = "docletArtifact" )
@@ -712,7 +688,7 @@ public abstract class AbstractJavadocMojo
      * <code>-doclet</code> option).
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#docletpath">docletpath</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#docletpath">docletpath</a>.
      * <br/>
      * Example:
      * <pre>
@@ -725,7 +701,7 @@ public abstract class AbstractJavadocMojo
      * &lt;/docletArtifacts&gt;
      * </pre>
      * <br/>
-     * See <a href="./apidocs/org/apache/maven/plugin/javadoc/options/DocletArtifact.html">Javadoc</a>.
+     * See <a href="./apidocs/org/apache/maven/plugins/javadoc/options/DocletArtifact.html">Javadoc</a>.
      * <br/>
      *
      * @since 2.1
@@ -739,7 +715,7 @@ public abstract class AbstractJavadocMojo
      * a colon (<code>:</code>) or a semi-colon (<code>;</code>).
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#docletpath">docletpath</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#docletpath">docletpath</a>.
      */
     @Parameter( property = "docletPath" )
     private String docletPath;
@@ -748,7 +724,7 @@ public abstract class AbstractJavadocMojo
      * Specifies the encoding name of the source files. If not specificed, the encoding value will be the value of the
      * <code>file.encoding</code> system property.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#encoding">encoding</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#encoding">encoding</a>.
      * <br/>
      * <b>Note</b>: In 2.4, the default value was locked to <code>ISO-8859-1</code> to ensure reproducing build, but
      * this was reverted in 2.5.
@@ -761,16 +737,24 @@ public abstract class AbstractJavadocMojo
      * Unconditionally excludes the specified packages and their subpackages from the list formed by
      * <code>-subpackages</code>. Multiple packages can be separated by commas (<code>,</code>), colons (<code>:</code>)
      * or semicolons (<code>;</code>).
-     * <br/>
+     * <p>
+     * Wildcards work as followed:
+     * <ul>
+     *   <li>a wildcard at the beginning should match 1 or more folders</li>
+     *   <li>any other wildcard must match exactly one folder</li>
+     * </ul>
+     * </p>
+     * <p>
      * Example:
      * <pre>
      * &lt;excludePackageNames&gt;*.internal:org.acme.exclude1.*:org.acme.exclude2&lt;/excludePackageNames&gt;
      * </pre>
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#exclude">exclude</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#exclude">exclude</a>.
      * <br/>
-     * Since <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
+     * Since <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
      * 1.4</a>.
+     * </p>
      */
     @Parameter( property = "excludePackageNames" )
     private String excludePackageNames;
@@ -779,7 +763,7 @@ public abstract class AbstractJavadocMojo
      * Specifies the directories where extension classes reside. Separate directories in <code>extdirs</code> with a
      * colon (<code>:</code>) or a semi-colon (<code>;</code>).
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#extdirs">extdirs</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#extdirs">extdirs</a>.
      */
     @Parameter( property = "extdirs" )
     private String extdirs;
@@ -787,7 +771,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Specifies the locale that javadoc uses when generating documentation.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#locale">locale</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#locale">locale</a>.
      */
     @Parameter( property = "locale" )
     private String locale;
@@ -816,7 +800,7 @@ public abstract class AbstractJavadocMojo
      * This option creates documentation with the appearance and functionality of documentation generated by
      * Javadoc 1.1.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#1.1">1.1</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#1.1">1.1</a>.
      * <br/>
      */
     @Parameter( property = "old", defaultValue = "false" )
@@ -828,7 +812,7 @@ public abstract class AbstractJavadocMojo
      * <br/>
      * <b>Note</b>: could be in conflict with &lt;nooverview/&gt;.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#overview">overview</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#overview">overview</a>.
      * <br/>
      */
     @Parameter( property = "overview", defaultValue = "${basedir}/src/main/javadoc/overview.html" )
@@ -839,9 +823,9 @@ public abstract class AbstractJavadocMojo
      * easier to view.
      * <br/>
      * Note: was a standard doclet in Java 1.4.2 (refer to bug ID
-     * <a href="http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=4714350">4714350</a>).
+     * <a href="https://bugs.java.com/bugdatabase/view_bug.do?bug_id=4714350">4714350</a>).
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#quiet">quiet</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#quiet">quiet</a>.
      * <br/>
      * Since Java 5.0.
      * <br/>
@@ -853,13 +837,13 @@ public abstract class AbstractJavadocMojo
      * Specifies the access level for classes and members to show in the Javadocs.
      * Possible values are:
      * <ul>
-     * <li><a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#public">public</a>
+     * <li><a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#public">public</a>
      * (shows only public classes and members)</li>
-     * <li><a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#protected">protected</a>
+     * <li><a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#protected">protected</a>
      * (shows only public and protected classes and members)</li>
-     * <li><a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#package">package</a>
+     * <li><a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#package">package</a>
      * (shows all classes and members not marked private)</li>
-     * <li><a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#private">private</a>
+     * <li><a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#private">private</a>
      * (shows all classes and members)</li>
      * </ul>
      * <br/>
@@ -871,20 +855,29 @@ public abstract class AbstractJavadocMojo
      * Necessary to enable javadoc to handle assertions introduced in J2SE v 1.4 source code or generics introduced in
      * J2SE v5.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#source">source</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#source">source</a>.
      * <br/>
-     * Since <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
+     * Since <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
      * 1.4</a>.
      */
-    @Parameter( property = "source" )
+    @Parameter( property = "source", defaultValue = "${maven.compiler.source}" )
     private String source;
+
+    /**
+     * Provide source compatibility with specified release
+     *
+     * @since JDK 9
+     * @since 3.1.0
+     */
+    @Parameter( defaultValue = "${maven.compiler.release}" )
+    private String release;
 
     /**
      * Specifies the source paths where the subpackages are located. The <code>sourcepath</code> can contain
      * multiple paths by separating them with a colon (<code>:</code>) or a semi-colon (<code>;</code>).
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#sourcepath">sourcepath</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#sourcepath">sourcepath</a>.
      */
     @Parameter( property = "sourcepath" )
     private String sourcepath;
@@ -894,9 +887,9 @@ public abstract class AbstractJavadocMojo
      * colons (<code>:</code>).
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#subpackages">subpackages</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#subpackages">subpackages</a>.
      * <br/>
-     * Since <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
+     * Since <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
      * 1.4</a>.
      */
     @Parameter( property = "subpackages" )
@@ -905,7 +898,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Provides more detailed messages while javadoc is running.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#verbose">verbose</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#verbose">verbose</a>.
      * <br/>
      */
     @Parameter( property = "verbose", defaultValue = "false" )
@@ -918,7 +911,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Specifies whether or not the author text is included in the generated Javadocs.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#author">author</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#author">author</a>.
      * <br/>
      */
     @Parameter( property = "author", defaultValue = "true" )
@@ -926,11 +919,14 @@ public abstract class AbstractJavadocMojo
 
     /**
      * Specifies the text to be placed at the bottom of each output file.<br/>
-     * If you want to use html you have to put it in a CDATA section, <br/>
-     * eg. <code>&lt;![CDATA[Copyright 2005, &lt;a href="http://www.mycompany.com">MyCompany, Inc.&lt;a>]]&gt;</code>
-     * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#bottom">bottom</a>.
-     * <br/>
+     * If you want to use html, you have to put it in a CDATA section, <br/>
+     * e.g. <code>&lt;![CDATA[Copyright 2005, &lt;a href="http://www.mycompany.com">MyCompany, Inc.&lt;a>]]&gt;</code>
+     * <br>
+     * <strong>Note:<strong>If the project has the property <code>project.build.outputTimestamp</code>, its year will
+     * be used as {currentYear}. This way it is possible to generate reproducible javadoc jars.
+     * <br>
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#bottom">bottom</a>.
+     * <br>
      */
     @Parameter( property = "bottom",
                     defaultValue = "Copyright &#169; {inceptionYear}&#x2013;{currentYear} {organizationName}. "
@@ -941,7 +937,7 @@ public abstract class AbstractJavadocMojo
      * Specifies the HTML character set for this document. If not specificed, the charset value will be the value of
      * the <code>docencoding</code> parameter.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#charset">charset</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#charset">charset</a>.
      * <br/>
      */
     @Parameter( property = "charset" )
@@ -952,7 +948,7 @@ public abstract class AbstractJavadocMojo
      * <code>UTF-8</code>.
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#docencoding">docencoding</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#docencoding">docencoding</a>.
      */
     @Parameter( property = "docencoding", defaultValue = "${project.reporting.outputEncoding}" )
     private String docencoding;
@@ -962,10 +958,10 @@ public abstract class AbstractJavadocMojo
      * directory from the <code>javadocDirectory</code> directory (for instance,
      * <code>src/main/javadoc/com/mycompany/myapp/doc-files</code> and <code>src/main/javadoc/resources</code>).
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#docfilessubdirs">
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#docfilessubdirs">
      * docfilessubdirs</a>.
      * <br/>
-     * Since <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
+     * Since <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
      * 1.4</a>.
      * <br/>
      * See <a href="#javadocDirectory">javadocDirectory</a>.
@@ -980,7 +976,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Specifies specific checks to be performed on Javadoc comments.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/8/docs/technotes/tools/windows/javadoc.html#BEJEFABE">doclint</a>.
+     * See <a href="https://docs.oracle.com/javase/8/docs/technotes/tools/windows/javadoc.html#BEJEFABE">doclint</a>.
      *
      * @since 3.0.0
      */
@@ -990,7 +986,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Specifies the title to be placed near the top of the overview summary file.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#doctitle">doctitle</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#doctitle">doctitle</a>.
      * <br/>
      */
     @Parameter( property = "doctitle", defaultValue = "${project.name} ${project.version} API" )
@@ -1000,10 +996,10 @@ public abstract class AbstractJavadocMojo
      * Excludes any "doc-files" subdirectories with the given names. Multiple patterns can be excluded
      * by separating them with colons (<code>:</code>).
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#excludedocfilessubdir">
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#excludedocfilessubdir">
      * excludedocfilessubdir</a>.
      * <br/>
-     * Since <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
+     * Since <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
      * 1.4</a>.
      *
      * @see #docfilessubdirs
@@ -1014,7 +1010,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Specifies the footer text to be placed at the bottom of each output file.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#footer">footer</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#footer">footer</a>.
      */
     @Parameter( property = "footer" )
     private String footer;
@@ -1046,18 +1042,18 @@ public abstract class AbstractJavadocMojo
      * <b>Note</b>: using <code>java.lang.*</code> for <code>packages</code> would omit the <code>java.lang</code>
      * package but using <code>java.lang*</code> will include it.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#group">group</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#group">group</a>.
      * <br/>
-     * See <a href="./apidocs/org/apache/maven/plugin/javadoc/options/Group.html">Javadoc</a>.
+     * See <a href="./apidocs/org/apache/maven/plugins/javadoc/options/Group.html">Javadoc</a>.
      * <br/>
      */
-    @Parameter( property = "groups" )
+    @Parameter
     private Group[] groups;
 
     /**
      * Specifies the header text to be placed at the top of each output file.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#header">header</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#header">header</a>.
      */
     @Parameter( property = "header" )
     private String header;
@@ -1102,7 +1098,7 @@ public abstract class AbstractJavadocMojo
      * Where <code>path/to/your/resource/yourhelp-doc.html</code> is defined in the
      * <code>groupId:artifactId:version</code> javadoc plugin dependency.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#helpfile">helpfile</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#helpfile">helpfile</a>.
      */
     @Parameter( property = "helpfile" )
     private String helpfile;
@@ -1110,14 +1106,14 @@ public abstract class AbstractJavadocMojo
     /**
      * Adds HTML meta keyword tags to the generated file for each class.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#keywords">keywords</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#keywords">keywords</a>.
      * <br/>
      * Since
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.2.html#commandlineoptions">
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.2.html#commandlineoptions">
      * Java 1.4.2</a>.
      * <br/>
      * Since
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.5.0.html#commandlineoptions">
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.5.0.html#commandlineoptions">
      * Java 5.0</a>.
      * <br/>
      *
@@ -1131,35 +1127,53 @@ public abstract class AbstractJavadocMojo
      * <br>
      * <b>Notes</b>:
      * <ol>
-     * <li>only used if {@link #isOffline} is set to <code>false</code>.</li>
+     * <li>only used if {@code isOffline} is set to <code>false</code>.</li>
      * <li>all given links should have a fetchable <code>/package-list</code> file. For instance:
      * <pre>
      * &lt;links&gt;
-     *   &lt;link&gt;http://docs.oracle.com/javase/1.4.2/docs/api&lt;/link&gt;
+     *   &lt;link&gt;https://docs.oracle.com/javase/1.4.2/docs/api&lt;/link&gt;
      * &lt;links&gt;
      * </pre>
-     * will be used because <code>http://docs.oracle.com/javase/1.4.2/docs/api/package-list</code> exists.</li>
-     * <li>if {@link #detectLinks} is defined, the links between the project dependencies are
+     * will be used because <code>https://docs.oracle.com/javase/1.4.2/docs/api/package-list</code> exists.</li>
+     * <li>if {@code detectLinks} is defined, the links between the project dependencies are
      * automatically added.</li>
-     * <li>if {@link #detectJavaApiLink} is defined, a Java API link, based on the Java version of the
+     * <li>if {@code detectJavaApiLink} is defined, a Java API link, based on the Java version of the
      * project's sources, will be added automatically.</li>
      * </ol>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#link">link</a>.
-     *
-     * @see #detectLinks
-     * @see #detectJavaApiLink
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#link">link</a>.
      */
     @Parameter( property = "links" )
     protected ArrayList<String> links;
+
+
+    /**
+     * Redefine the apidoc URL for specific dependencies when using {@code detectLinks}.
+     * Useful if the dependency wasn't build with Maven or when the apidocs have been moved.
+     * <pre>
+     * &lt;dependencyLinks&gt;
+     *   &lt;dependencyLink&gt;
+     *     &lt;groupId&gt;groupId&lt;/groupId&gt;
+     *     &lt;artifactId&gt;artifactId&lt;/artifactId&gt;
+     *     &lt;classifier&gt;classifier&lt;/classifier&gt; &lt;!-- optional --&gt;
+     *     &lt;url&gt;version&lt;/url&gt;
+     *   &lt;/dependencyLink&gt;
+     * &lt;/dependencyLinks&gt;
+     * </pre>
+     *
+     * @see #detectLinks
+     * @since 3.3.0
+     */
+    @Parameter
+    private List<DependencyLink> dependencyLinks = new ArrayList<>();
 
     /**
      * Creates an HTML version of each source file (with line numbers) and adds links to them from the standard
      * HTML documentation.
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#linksource">linksource</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#linksource">linksource</a>.
      * <br/>
-     * Since <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
+     * Since <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
      * 1.4</a>.
      * <br/>
      */
@@ -1169,9 +1183,9 @@ public abstract class AbstractJavadocMojo
     /**
      * Suppress the entire comment body, including the main description and all tags, generating only declarations.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#nocomment">nocomment</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#nocomment">nocomment</a>.
      * <br/>
-     * Since <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
+     * Since <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
      * 1.4</a>.
      * <br/>
      */
@@ -1183,7 +1197,7 @@ public abstract class AbstractJavadocMojo
      * <br/>
      * See
      * <a
-     * href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#nodeprecated">nodeprecated</a>.
+     * href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#nodeprecated">nodeprecated</a>.
      * <br/>
      */
     @Parameter( property = "nodeprecated", defaultValue = "false" )
@@ -1193,7 +1207,7 @@ public abstract class AbstractJavadocMojo
      * Prevents the generation of the file containing the list of deprecated APIs (deprecated-list.html) and the
      * link in the navigation bar to that page.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#nodeprecatedlist">
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#nodeprecatedlist">
      * nodeprecatedlist</a>.
      * <br/>
      */
@@ -1205,7 +1219,7 @@ public abstract class AbstractJavadocMojo
      * <br/>
      * <b>Note</b>: could be in conflict with &lt;helpfile/&gt;.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#nohelp">nohelp</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#nohelp">nohelp</a>.
      * <br/>
      */
     @Parameter( property = "nohelp", defaultValue = "false" )
@@ -1216,7 +1230,7 @@ public abstract class AbstractJavadocMojo
      * <br/>
      * <b>Note</b>: could be in conflict with &lt;splitindex/&gt;.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#noindex">noindex</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#noindex">noindex</a>.
      * <br/>
      */
     @Parameter( property = "noindex", defaultValue = "false" )
@@ -1225,7 +1239,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Omits the navigation bar from the generated docs.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#nonavbar">nonavbar</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#nonavbar">nonavbar</a>.
      * <br/>
      */
     @Parameter( property = "nonavbar", defaultValue = "false" )
@@ -1253,9 +1267,9 @@ public abstract class AbstractJavadocMojo
      * &lt;noqualifier&gt;packagename1:packagename2&lt;/noqualifier&gt;
      * </pre>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#noqualifier">noqualifier</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#noqualifier">noqualifier</a>.
      * <br/>
-     * Since <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
+     * Since <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java
      * 1.4</a>.
      */
     @Parameter( property = "noqualifier" )
@@ -1264,7 +1278,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Omits from the generated docs the "Since" sections associated with the since tags.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#nosince">nosince</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#nosince">nosince</a>.
      * <br/>
      */
     @Parameter( property = "nosince", defaultValue = "false" )
@@ -1272,14 +1286,16 @@ public abstract class AbstractJavadocMojo
 
     /**
      * Suppresses the timestamp, which is hidden in an HTML comment in the generated HTML near the top of each page.
-     * <br/>
+     * <br><br>
+     * <strong>Note:</strong> If the project has the property <code>project.build.outputTimestamp</code>, the value
+     * will be overwritten to true. This way it is possible to generate reproducible javadoc jars.
+     * <br><br>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#notimestamp">notimestamp</a>.
-     * <br/>
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#notimestamp">notimestamp</a>.
+     * <br>
      * Since
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.5.0.html#commandlineoptions">
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.5.0.html#commandlineoptions">
      * Java 5.0</a>.
-     * <br/>
      *
      * @since 2.1
      */
@@ -1289,7 +1305,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Omits the class/interface hierarchy pages from the generated docs.
      * <br>
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#notree">notree</a> option
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#notree">notree</a> option
      */
     @Parameter( property = "notree", defaultValue = "false" )
     private boolean notree;
@@ -1299,22 +1315,22 @@ public abstract class AbstractJavadocMojo
      * for external referenced classes.
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#linkoffline">linkoffline</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#linkoffline">linkoffline</a>.
      * <br/>
      * Example:
      * <pre>
      * &lt;offlineLinks&gt;
      *   &lt;offlineLink&gt;
-     *     &lt;url&gt;http://docs.oracle.com/javase/1.5.0/docs/api/&lt;/url&gt;
+     *     &lt;url&gt;https://docs.oracle.com/javase/1.5.0/docs/api/&lt;/url&gt;
      *     &lt;location&gt;../javadoc/jdk-5.0/&lt;/location&gt;
      *   &lt;/offlineLink&gt;
      * &lt;/offlineLinks&gt;
      * </pre>
      * <br/>
-     * <b>Note</b>: if {@link #detectOfflineLinks} is defined, the offline links between the project modules are
+     * <b>Note</b>: if {@code detectOfflineLinks} is defined, the offline links between the project modules are
      * automatically added if the goal is calling in a non-aggregator way.
      * <br>
-     * @see <a href="./apidocs/org/apache/maven/plugin/javadoc/options/OfflineLink.html">Javadoc</a>.
+     * @see <a href="./apidocs/org/apache/maven/plugins/javadoc/options/OfflineLink.html">Javadoc</a>.
      */
     @Parameter( property = "offlineLinks" )
     private OfflineLink[] offlineLinks;
@@ -1322,7 +1338,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Specifies the destination directory where javadoc saves the generated HTML files.
      * <br>
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#d">d</a> option
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#d">javadoc d</a>
      */
     @Parameter( property = "destDir", alias = "destDir", defaultValue = "${project.build.directory}/apidocs",
                     required = true )
@@ -1332,7 +1348,7 @@ public abstract class AbstractJavadocMojo
      * Specify the text for upper left frame.
      * <br/>
      * Since
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.2.html#commandlineoptions">
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.2.html#commandlineoptions">
      * Java 1.4.2</a>.
      *
      * @since 2.1
@@ -1343,7 +1359,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Generates compile-time warnings for missing serial tags.
      * <br/>
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#serialwarn">serialwarn</a> option 
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#serialwarn">serialwarn</a> option
      */
     @Parameter( property = "serialwarn", defaultValue = "false" )
     private boolean serialwarn;
@@ -1356,7 +1372,7 @@ public abstract class AbstractJavadocMojo
      * <a href="http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=4788919">4788919</a>).
      * <br/>
      * Since
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.2.html#commandlineoptions">
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.2.html#commandlineoptions">
      * 1.4.2</a>.
      * <br/>
      * Since Java 5.0.
@@ -1373,7 +1389,7 @@ public abstract class AbstractJavadocMojo
      * <b>Note</b>: could be in conflict with &lt;noindex/&gt;.
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#splitindex">splitindex</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#splitindex">splitindex</a>.
      * <br/>
      */
     @Parameter( property = "splitindex", defaultValue = "false" )
@@ -1426,19 +1442,32 @@ public abstract class AbstractJavadocMojo
      * Where <code>path/to/your/resource/yourstylesheet.css</code> is defined in the
      * <code>groupId:artifactId:version</code> javadoc plugin dependency.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#stylesheetfile">
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#stylesheetfile">
      * stylesheetfile</a>.
      */
     @Parameter( property = "stylesheetfile" )
-   private String stylesheetfile;
+    private String stylesheetfile;
+
+    /**
+     * Specifies the path of an additional HTML stylesheet file relative to the {@code javadocDirectory}
+     * Example:
+     * <pre>
+     *     &lt;addStylesheets&gt;
+     *         &lt;resources/addstylesheet.css&lt;/addStylesheet&gt;
+     *     &lt;/addStylesheets&gt;
+     * </pre>
+     * @since 3.3.0
+     */
+    @Parameter
+    private String[] addStylesheets;
 
     /**
      * Specifies the class file that starts the taglet used in generating the documentation for that tag.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#taglet">taglet</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#taglet">taglet</a>.
      * <br/>
      * Since
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java 1.4</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java 1.4</a>.
      */
     @Parameter( property = "taglet" )
     private String taglet;
@@ -1447,7 +1476,7 @@ public abstract class AbstractJavadocMojo
      * Specifies the Taglet artifact containing the taglet class files (.class).
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#tagletpath">tagletpath</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#tagletpath">tagletpath</a>.
      * <br/>
      * Example:
      * <pre>
@@ -1467,7 +1496,7 @@ public abstract class AbstractJavadocMojo
      * &lt;/tagletArtifact&gt;
      * </pre>
      * <br/>
-     * See <a href="./apidocs/org/apache/maven/plugin/javadoc/options/TagletArtifact.html">Javadoc</a>.
+     * See <a href="./apidocs/org/apache/maven/plugins/javadoc/options/TagletArtifact.html">Javadoc</a>.
      * <br/>
      *
      * @since 2.1
@@ -1479,10 +1508,10 @@ public abstract class AbstractJavadocMojo
      * Specifies several Taglet artifacts containing the taglet class files (.class). These taglets class names will be
      * auto-detect and so no need to specify them.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#taglet">taglet</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#taglet">taglet</a>.
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#tagletpath">tagletpath</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#tagletpath">tagletpath</a>.
      * <br/>
      * Example:
      * <pre>
@@ -1496,7 +1525,7 @@ public abstract class AbstractJavadocMojo
      * &lt;/tagletArtifacts&gt;
      * </pre>
      * <br/>
-     * See <a href="./apidocs/org/apache/maven/plugin/javadoc/options/TagletArtifact.html">Javadoc</a>.
+     * See <a href="./apidocs/org/apache/maven/plugins/javadoc/options/TagletArtifact.html">Javadoc</a>.
      * <br/>
      *
      * @since 2.5
@@ -1509,10 +1538,10 @@ public abstract class AbstractJavadocMojo
      * multiple paths by separating them with a colon (<code>:</code>) or a semi-colon (<code>;</code>).
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#tagletpath">tagletpath</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#tagletpath">tagletpath</a>.
      * <br/>
      * Since
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java 1.4</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java 1.4</a>.
      */
     @Parameter( property = "tagletpath" )
     private String tagletpath;
@@ -1520,10 +1549,10 @@ public abstract class AbstractJavadocMojo
     /**
      * Enables the Javadoc tool to interpret multiple taglets.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#taglet">taglet</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#taglet">taglet</a>.
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#tagletpath">tagletpath</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#tagletpath">tagletpath</a>.
      * <br/>
      * Example:
      * <pre>
@@ -1540,7 +1569,7 @@ public abstract class AbstractJavadocMojo
      * &lt;/taglets&gt;
      * </pre>
      * <br/>
-     * See <a href="./apidocs/org/apache/maven/plugin/javadoc/options/Taglet.html">Javadoc</a>.
+     * See <a href="./apidocs/org/apache/maven/plugins/javadoc/options/Taglet.html">Javadoc</a>.
      * <br/>
      *
      * @since 2.1
@@ -1551,10 +1580,10 @@ public abstract class AbstractJavadocMojo
     /**
      * Enables the Javadoc tool to interpret a simple, one-argument custom block tag tagname in doc comments.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#tag">tag</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#tag">tag</a>.
      * <br/>
      * Since
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java 1.4</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#summary">Java 1.4</a>.
      * <br/>
      * Example:
      * <pre>
@@ -1577,7 +1606,7 @@ public abstract class AbstractJavadocMojo
      * <li><b><code>m</code></b> (methods)</li>
      * <li><b><code>f</code></b> (fields)</li>
      * </ul>
-     * See <a href="./apidocs/org/apache/maven/plugin/javadoc/options/Tag.html">Javadoc</a>.
+     * See <a href="./apidocs/org/apache/maven/plugins/javadoc/options/Tag.html">Javadoc</a>.
      * <br/>
      */
     @Parameter( property = "tags" )
@@ -1598,7 +1627,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Includes one "Use" page for each documented class and package.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#use">use</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#use">use</a>.
      * <br/>
      */
     @Parameter( property = "use", defaultValue = "true" )
@@ -1607,7 +1636,7 @@ public abstract class AbstractJavadocMojo
     /**
      * Includes the version text in the generated docs.
      * <br/>
-     * See <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#version">version</a>.
+     * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#version">version</a>.
      * <br/>
      */
     @Parameter( property = "version", defaultValue = "true" )
@@ -1617,7 +1646,7 @@ public abstract class AbstractJavadocMojo
      * Specifies the title to be placed in the HTML title tag.
      * <br/>
      * See
-     * <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#windowtitle">windowtitle</a>.
+     * <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#windowtitle">windowtitle</a>.
      * <br/>
      */
     @Parameter( property = "windowtitle", defaultValue = "${project.name} ${project.version} API" )
@@ -1642,13 +1671,16 @@ public abstract class AbstractJavadocMojo
     private File sourceDependencyCacheDir;
 
     /**
-     * Whether to include transitive dependencies in the list of dependency -sources jars to include
-     * in this javadoc run.
+     * Whether to include transitive dependencies in the list of dependency -sources jars to include in this javadoc
+     * run.
      *
      * @see #includeDependencySources
      * @since 2.7
+     * @deprecated if these sources depend on transitive dependencies, those dependencies should be added to the pom as
+     *             direct dependencies
      */
     @Parameter( defaultValue = "false" )
+    @Deprecated
     private boolean includeTransitiveDependencySources;
 
     /**
@@ -1694,7 +1726,7 @@ public abstract class AbstractJavadocMojo
      *   &lt;additionalDependency&gt;
      *     &lt;groupId&gt;geronimo-spec&lt;/groupId&gt;
      *     &lt;artifactId&gt;geronimo-spec-jta&lt;/artifactId&gt;
-     *     &lt;version&gt;1.0.1B-rc4:&lt;/version&gt;
+     *     &lt;version&gt;1.0.1B-rc4&lt;/version&gt;
      *   &lt;/additionalDependency&gt;
      * &lt;/additionalDependencies&gt;
      * </pre>
@@ -1707,6 +1739,8 @@ public abstract class AbstractJavadocMojo
     /**
      * Include filters on the source files. Default is **\/\*.java.
      * These are ignored if you specify subpackages or subpackage excludes.
+     *
+     * @since 2.9
      */
     @Parameter
     private List<String> sourceFileIncludes;
@@ -1714,6 +1748,8 @@ public abstract class AbstractJavadocMojo
     /**
      * exclude filters on the source files.
      * These are ignored if you specify subpackages or subpackage excludes.
+     *
+     * @since 2.9
      */
     @Parameter
     private List<String> sourceFileExcludes;
@@ -1724,31 +1760,75 @@ public abstract class AbstractJavadocMojo
      */
     @Parameter( defaultValue = "true", property = "maven.javadoc.applyJavadocSecurityFix" )
     private boolean applyJavadocSecurityFix = true;
-    
+
     /**
      * <p>
-     * Specify the requirements for this jdk toolchain.
+     * Allow for configuration of the javadoc tool via maven toolchains.
      * This overrules the toolchain selected by the maven-toolchain-plugin.
      * </p>
+     *
+     * <p>Examples:</p>
+     * (see <a href="https://maven.apache.org/guides/mini/guide-using-toolchains.html">
+     *     Guide to Toolchains</a> for more info)
+     *
+     * <pre>
+     * {@code
+     *    <configuration>
+     *        ...
+     *        <jdkToolchain>
+     *            <version>11</version>
+     *        </jdkToolchain>
+     *    </configuration>
+     *
+     *    <configuration>
+     *        ...
+     *        <jdkToolchain>
+     *            <version>1.8</version>
+     *            <vendor>zulu</vendor>
+     *        </jdkToolchain>
+     *    </configuration>
+     *    }
+     * </pre>
+     *
      * <strong>note:</strong> requires at least Maven 3.3.1
-     * 
+     *
      * @since 3.0.0
      */
     @Parameter
     private Map<String, String> jdkToolchain;
 
-    // ----------------------------------------------------------------------
-    // static
-    // ----------------------------------------------------------------------
+    /**
+     * <p>
+     * Location of the file used to store the state of the previous javadoc run.
+     * This is used to skip the generation if nothing has changed.
+     * </p>
+     *
+     * @since 3.2.0
+     */
+    @Parameter( property = "staleDataPath",
+            defaultValue = "${project.build.directory}/maven-javadoc-plugin-stale-data.txt" )
+    private File staleDataPath;
 
-    static
-    {
-        DEFAULT_JAVA_API_LINKS.put( "api_1.5", "https://docs.oracle.com/javase/1.5.0/docs/api/" );
-        DEFAULT_JAVA_API_LINKS.put( "api_1.6", "https://docs.oracle.com/javase/6/docs/api/" );
-        DEFAULT_JAVA_API_LINKS.put( "api_1.7", "https://docs.oracle.com/javase/7/docs/api/" );
-        DEFAULT_JAVA_API_LINKS.put( "api_1.8", "https://docs.oracle.com/javase/8/docs/api/" );
-        DEFAULT_JAVA_API_LINKS.put( "api_9",   "https://docs.oracle.com/javase/9/docs/api/" );
-    }
+
+    /**
+     * <p>
+     * Comma separated list of modules (artifactId) to not add in aggregated javadoc
+     * </p>
+     *
+     * @since 3.2.0
+     */
+    @Parameter( property = "maven.javadoc.skippedModules" )
+    private String skippedModules;
+
+    /**
+     * Timestamp for reproducible output archive entries, either formatted as ISO 8601
+     * <code>yyyy-MM-dd'T'HH:mm:ssXXX</code> or as an int representing seconds since the epoch (like
+     * <a href="https://reproducible-builds.org/docs/source-date-epoch/">SOURCE_DATE_EPOCH</a>).
+     *
+     * @since 3.2.0
+     */
+    @Parameter( defaultValue = "${project.build.outputTimestamp}" )
+    protected String outputTimestamp;
 
     // ----------------------------------------------------------------------
     // protected methods
@@ -1802,6 +1882,48 @@ public abstract class AbstractJavadocMojo
         }
 
         return Collections.singletonList( new File( p.getBuild().getOutputDirectory() ) );
+    }
+
+    /**
+     * Either returns the attached artifact file or outputDirectory
+     *
+     * @param project
+     * @return
+     */
+    protected File getClassesFile( MavenProject project )
+    {
+        if ( !isAggregator() && isTest() )
+        {
+            return null;
+        }
+
+        if ( project.getArtifact() != null && project.getArtifact().getFile() != null )
+        {
+            File artifactFile = project.getArtifact().getFile();
+            if ( artifactFile.isDirectory() || artifactFile.getName().endsWith( ".jar" ) )
+            {
+                return artifactFile;
+            }
+        }
+        else if ( project.getExecutionProject() != null
+                        && project.getExecutionProject().getArtifact() != null
+                        && project.getExecutionProject().getArtifact().getFile() != null )
+        {
+            File artifactFile = project.getExecutionProject().getArtifact().getFile();
+            if ( artifactFile.isDirectory() || artifactFile.getName().endsWith( ".jar" ) )
+            {
+                return artifactFile;
+            }
+        }
+
+        if ( project.getBuild().getOutputDirectory() != null )
+        {
+            return new File( project.getBuild().getOutputDirectory() );
+        }
+        else
+        {
+            return null;
+        }
     }
 
     /**
@@ -1916,11 +2038,9 @@ public abstract class AbstractJavadocMojo
 
     protected final void verifyRemovedParameter( String paramName )
     {
-        Object pluginConfiguration = mojo.getConfiguration();
-        if ( pluginConfiguration instanceof Xpp3Dom )
+        Xpp3Dom configDom = mojo.getConfiguration();
+        if ( configDom != null )
         {
-            Xpp3Dom configDom = (Xpp3Dom) pluginConfiguration;
-
             if ( configDom.getChild( paramName ) != null )
             {
                 throw new IllegalArgumentException( "parameter '" + paramName
@@ -1931,11 +2051,9 @@ public abstract class AbstractJavadocMojo
 
     private void verifyReplacedParameter( String oldParamName, String newParamNew )
     {
-        Object pluginConfiguration = mojo.getConfiguration();
-        if ( pluginConfiguration instanceof Xpp3Dom )
+        Xpp3Dom configDom = mojo.getConfiguration();
+        if ( configDom != null )
         {
-            Xpp3Dom configDom = (Xpp3Dom) pluginConfiguration;
-
             if ( configDom.getChild( oldParamName ) != null )
             {
                 throw new IllegalArgumentException( "parameter '" + oldParamName
@@ -1960,11 +2078,6 @@ public abstract class AbstractJavadocMojo
             return;
         }
 
-        if ( isAggregator() && !project.isExecutionRoot() )
-        {
-            return;
-        }
-
         if ( getLog().isDebugEnabled() )
         {
             this.debug = true;
@@ -1981,18 +2094,17 @@ public abstract class AbstractJavadocMojo
             throw new MavenReportException( "Failed to generate javadoc options file: " + e.getMessage(), e );
         }
 
-        Map<String, Collection<String>> sourcePaths = getSourcePaths();
-        
-        Collection<String> collectedSourcePaths = collect( sourcePaths.values() );
-        
-        List<String> files = getFiles( collectedSourcePaths );
+        Collection<JavadocModule> sourcePaths = getSourcePaths();
+
+        Collection<Path> collectedSourcePaths = sourcePaths.stream()
+                                                           .flatMap( e -> e.getSourcePaths().stream() )
+                                                           .collect( Collectors.toList() );
+
+        Map<Path, Collection<String>> files = getFiles( collectedSourcePaths );
         if ( !canGenerateReport( files ) )
         {
             return;
         }
-
-        List<String> packageNames = getPackageNames( collectedSourcePaths, files );
-        List<String> filesWithUnnamedPackages = getFilesWithUnnamedPackages( collectedSourcePaths, files );
 
         // ----------------------------------------------------------------------
         // Find the javadoc executable and version
@@ -2008,6 +2120,16 @@ public abstract class AbstractJavadocMojo
             throw new MavenReportException( "Unable to find javadoc command: " + e.getMessage(), e );
         }
         setFJavadocVersion( new File( jExecutable ) );
+
+        Collection<String> packageNames;
+        if ( javadocRuntimeVersion.isAtLeast( "9" ) )
+        {
+            packageNames = getPackageNamesRespectingJavaModules( sourcePaths );
+        }
+        else
+        {
+            packageNames = getPackageNames( files );
+        }
 
         // ----------------------------------------------------------------------
         // Javadoc output directory as File
@@ -2060,26 +2182,36 @@ public abstract class AbstractJavadocMojo
             }
         }
 
-        List<String> arguments = new ArrayList<>();
+        // ----------------------------------------------------------------------
+        // Wrap Standard doclet Options
+        // ----------------------------------------------------------------------
+        List<String> standardDocletArguments = new ArrayList<>();
+
+        Set<OfflineLink> offlineLinks;
+        if ( StringUtils.isEmpty( doclet ) || useStandardDocletOptions )
+        {
+            offlineLinks = getLinkofflines();
+            addStandardDocletOptions( javadocOutputDirectory, standardDocletArguments, offlineLinks );
+        }
+        else
+        {
+            offlineLinks = Collections.emptySet();
+        }
 
         // ----------------------------------------------------------------------
         // Wrap Javadoc options
         // ----------------------------------------------------------------------
+        List<String> javadocArguments = new ArrayList<>();
 
-        addJavadocOptions( javadocOutputDirectory, arguments, sourcePaths );
-
-        // ----------------------------------------------------------------------
-        // Wrap Standard doclet Options
-        // ----------------------------------------------------------------------
-
-        if ( StringUtils.isEmpty( doclet ) || useStandardDocletOptions )
-        {
-            addStandardDocletOptions( javadocOutputDirectory, arguments );
-        }
+        addJavadocOptions( javadocOutputDirectory, javadocArguments, sourcePaths, offlineLinks );
 
         // ----------------------------------------------------------------------
         // Write options file and include it in the command line
         // ----------------------------------------------------------------------
+
+        List<String> arguments = new ArrayList<>( javadocArguments.size() + standardDocletArguments.size() );
+        arguments.addAll( javadocArguments );
+        arguments.addAll( standardDocletArguments );
 
         if ( arguments.size() > 0 )
         {
@@ -2110,9 +2242,11 @@ public abstract class AbstractJavadocMojo
             // Write argfile file and include it in the command line
             // ----------------------------------------------------------------------
 
-            if ( !filesWithUnnamedPackages.isEmpty() )
+            List<String> specialFiles = getSpecialFiles( files );
+
+            if ( !specialFiles.isEmpty() )
             {
-                addCommandLineArgFile( cmd, javadocOutputDirectory, filesWithUnnamedPackages );
+                addCommandLineArgFile( cmd, javadocOutputDirectory, specialFiles );
             }
         }
         else
@@ -2121,9 +2255,18 @@ public abstract class AbstractJavadocMojo
             // Write argfile file and include it in the command line
             // ----------------------------------------------------------------------
 
+            List<String> allFiles = new ArrayList<>();
+            for ( Map.Entry<Path, Collection<String>> filesEntry : files.entrySet() )
+            {
+                for ( String file : filesEntry.getValue() )
+                {
+                    allFiles.add( filesEntry.getKey().resolve( file ).toString() );
+                }
+            }
+
             if ( !files.isEmpty() )
             {
-                addCommandLineArgFile( cmd, javadocOutputDirectory, files );
+                addCommandLineArgFile( cmd, javadocOutputDirectory, allFiles );
             }
         }
 
@@ -2184,96 +2327,107 @@ public abstract class AbstractJavadocMojo
         }
     }
 
-    protected final Collection<String> collect( Collection<Collection<String>> sourcePaths )
-    {
-        Collection<String> collectedSourcePaths = new LinkedHashSet<>();
-        for ( Collection<String> sp : sourcePaths )
-        {
-            collectedSourcePaths.addAll( sp );
-        }
-        return collectedSourcePaths;
-    }
-
     /**
      * Method to get the files on the specified source paths
      *
      * @param sourcePaths a Collection that contains the paths to the source files
      * @return a List that contains the specific path for every source file
-     * @throws MavenReportException {@link MavenReportException}
+     * @throws MavenReportException {@link MavenReportException} issue while generating report
      */
-    protected List<String> getFiles( Collection<String> sourcePaths )
+    protected Map<Path, Collection<String>> getFiles( Collection<Path> sourcePaths )
         throws MavenReportException
     {
-        List<String> files = new ArrayList<>();
+        Map<Path, Collection<String>> mappedFiles = new LinkedHashMap<>( sourcePaths.size() );
         if ( StringUtils.isEmpty( subpackages ) )
         {
-            String[] excludedPackages = getExcludedPackages();
+            Collection<String> excludedPackages = getExcludedPackages();
 
-            for ( String sourcePath : sourcePaths )
+            final boolean autoExclude;
+            if ( release != null )
             {
-                File sourceDirectory = new File( sourcePath );
-                JavadocUtil.addFilesFromSource( files, sourceDirectory, sourceFileIncludes, sourceFileExcludes,
-                                                excludedPackages );
+                autoExclude = JavaVersion.parse( release ).isBefore( "9" );
+            }
+            else if ( source != null )
+            {
+                autoExclude = JavaVersion.parse( source ).isBefore( "9" );
+            }
+            else
+            {
+                autoExclude = false;
+            }
+
+            for ( Path sourcePath : sourcePaths )
+            {
+                File sourceDirectory = sourcePath.toFile();
+                List<String> files = new ArrayList<>( JavadocUtil.getFilesFromSource( sourceDirectory,
+                        sourceFileIncludes, sourceFileExcludes,
+                        excludedPackages ) );
+
+                if ( autoExclude && files.remove( "module-info.java" ) )
+                {
+                    getLog().debug( "Auto exclude module-info.java due to source value" );
+                }
+                mappedFiles.put( sourcePath, files );
             }
         }
 
-        return files;
+        return mappedFiles;
     }
 
     /**
-     * Method to get the source paths. If no source path is specified in the parameter, the compile source roots
-     * of the project will be used.
+     * Method to get the source paths per reactorProject. If no source path is specified in the parameter, the compile
+     * source roots of the project will be used.
      *
-     * @return a Collection of the project absolute source paths as <code>String</code>
-     * @throws MavenReportException {@link MavenReportException}
+     * @return a Map of the project absolute source paths per projects key (G:A)
+     * @throws MavenReportException {@link MavenReportException} issue while generating report
      * @see JavadocUtil#pruneDirs(MavenProject, Collection)
      */
-    protected Map<String, Collection<String>> getSourcePaths()
+    protected Collection<JavadocModule> getSourcePaths()
         throws MavenReportException
     {
-        Map<String, Collection<String>> mappedSourcePaths = new LinkedHashMap<>();
+        Collection<JavadocModule> mappedSourcePaths = new ArrayList<>();
 
         if ( StringUtils.isEmpty( sourcepath ) )
         {
-            
-            Set<String> sourcePaths =
-                new LinkedHashSet<>( JavadocUtil.pruneDirs( project, getProjectSourceRoots( project ) ) );
-
-            if ( project.getExecutionProject() != null )
+            if ( !"pom".equals( project.getPackaging()  ) )
             {
-                sourcePaths.addAll( JavadocUtil.pruneDirs( project, getExecutionProjectSourceRoots( project ) ) );
-            }
+                Set<Path> sourcePaths =
+                    new LinkedHashSet<>( JavadocUtil.pruneDirs( project, getProjectSourceRoots( project ) ) );
 
-            /*
-             * Should be after the source path (i.e. -sourcepath '.../src/main/java;.../src/main/javadoc') and
-             * *not* the opposite. If not, the javadoc tool always copies doc files, even if -docfilessubdirs is
-             * not setted.
-             */
-            if ( getJavadocDirectory() != null )
-            {
-                File javadocDir = getJavadocDirectory();
-                if ( javadocDir.exists() && javadocDir.isDirectory() )
+                if ( project.getExecutionProject() != null )
                 {
-                    Collection<String> l = JavadocUtil.pruneDirs( project, Collections.singletonList(
-                        getJavadocDirectory().getAbsolutePath() ) );
-                    sourcePaths.addAll( l );
+                    sourcePaths.addAll( JavadocUtil.pruneDirs( project, getExecutionProjectSourceRoots( project ) ) );
+                }
+
+                /*
+                 * Should be after the source path (i.e. -sourcepath '.../src/main/java;.../src/main/javadoc') and *not*
+                 * the opposite. If not, the javadoc tool always copies doc files, even if -docfilessubdirs is not
+                 * setted.
+                 */
+                if ( getJavadocDirectory() != null )
+                {
+                    File javadocDir = getJavadocDirectory();
+                    if ( javadocDir.exists() && javadocDir.isDirectory() )
+                    {
+                        Collection<Path> l =
+                            JavadocUtil.pruneDirs( project,
+                                               Collections.singletonList( getJavadocDirectory().getAbsolutePath() ) );
+                        sourcePaths.addAll( l );
+                    }
+                }
+                if ( !sourcePaths.isEmpty() )
+                {
+                    mappedSourcePaths.add( buildJavadocModule( project, sourcePaths ) );
                 }
             }
-            mappedSourcePaths.put( ArtifactUtils.versionlessKey( project.getGroupId(), project.getArtifactId() ),
-                                   sourcePaths );
-            
-            if ( includeDependencySources )
-            {
-                mappedSourcePaths.putAll( getDependencySourcePaths() );
-            }
 
-            if ( isAggregator() && project.isExecutionRoot() )
+            if ( isAggregator() )
             {
-                for ( MavenProject subProject : reactorProjects )
+                for ( MavenProject subProject : getAggregatedProjects() )
                 {
                     if ( subProject != project )
                     {
-                        Collection<String> additionalSourcePaths = new ArrayList<>();
+                        Collection<Path> additionalSourcePaths = new ArrayList<>();
 
                         List<String> sourceRoots = getProjectSourceRoots( subProject );
 
@@ -2296,33 +2450,107 @@ public abstract class AbstractJavadocMojo
                             File javadocDir = new File( subProject.getBasedir(), javadocDirRelative );
                             if ( javadocDir.exists() && javadocDir.isDirectory() )
                             {
-                                Collection<String> l = JavadocUtil.pruneDirs( subProject, Collections.singletonList(
+                                Collection<Path> l = JavadocUtil.pruneDirs( subProject, Collections.singletonList(
                                         javadocDir.getAbsolutePath() ) );
                                 additionalSourcePaths.addAll( l );
                             }
                         }
-                        mappedSourcePaths.put( ArtifactUtils.versionlessKey( subProject.getGroupId(),
-                                                                             subProject.getArtifactId() ),
-                                               additionalSourcePaths );
+
+                        if ( !additionalSourcePaths.isEmpty() )
+                        {
+                            mappedSourcePaths.add( buildJavadocModule( subProject , additionalSourcePaths ) );
+                        }
                     }
                 }
+            }
+
+            if ( includeDependencySources )
+            {
+                mappedSourcePaths.addAll( getDependencySourcePaths() );
             }
         }
         else
         {
-            Collection<String> sourcePaths = new ArrayList<>( Arrays.asList( JavadocUtil.splitPath( sourcepath ) ) );
-            sourcePaths = JavadocUtil.pruneDirs( project, sourcePaths );
+            Collection<Path> sourcePaths =
+                JavadocUtil.pruneDirs( project,
+                                       new ArrayList<>( Arrays.asList( JavadocUtil.splitPath( sourcepath ) ) ) );
             if ( getJavadocDirectory() != null )
             {
-                Collection<String> l = JavadocUtil.pruneDirs( project, Collections.singletonList(
+                Collection<Path> l = JavadocUtil.pruneDirs( project, Collections.singletonList(
                     getJavadocDirectory().getAbsolutePath() ) );
                 sourcePaths.addAll( l );
             }
-            mappedSourcePaths.put( ArtifactUtils.versionlessKey( project.getGroupId(), project.getArtifactId() ),
-                                   sourcePaths );
+
+            if ( !sourcePaths.isEmpty() )
+            {
+                mappedSourcePaths.add( new JavadocModule( ArtifactUtils.versionlessKey( project.getGroupId(),
+                                                                                        project.getArtifactId() ),
+                                                          getClassesFile( project ),
+                                                          sourcePaths ) );
+            }
         }
 
         return mappedSourcePaths;
+    }
+
+    private JavadocModule buildJavadocModule( MavenProject project, Collection<Path> sourcePaths )
+    {
+        File classessFile = getClassesFile( project );
+        ResolvePathResult resolvePathResult = getResolvePathResult( classessFile );
+        if ( resolvePathResult == null )
+        {
+            return new JavadocModule( ArtifactUtils.versionlessKey( project.getGroupId(), project.getArtifactId() ),
+                                      classessFile,
+                                      sourcePaths );
+        }
+        else
+        {
+            return new JavadocModule( ArtifactUtils.versionlessKey( project.getGroupId(), project.getArtifactId() ),
+                                      classessFile,
+                                      sourcePaths,
+                                      resolvePathResult.getModuleDescriptor(),
+                                      resolvePathResult.getModuleNameSource() );
+        }
+    }
+
+    /**
+     * Recursively add the modules of the aggregatedProject to the set of aggregatedModules.
+     *
+     * @param aggregatedProject the project being aggregated
+     * @param reactorProjectsMap map of (still) available reactor projects
+     */
+    private Set<MavenProject> modulesForAggregatedProject( MavenProject aggregatedProject,
+                                                           Map<Path, MavenProject> reactorProjectsMap )
+    {
+        // Maven does not supply an easy way to get the projects representing
+        // the modules of a project. So we will get the paths to the base
+        // directories of the modules from the project and compare with the
+        // base directories of the projects in the reactor.
+
+        if ( aggregatedProject.getModules().isEmpty() )
+        {
+            return Collections.singleton( aggregatedProject );
+        }
+
+        Path basePath = aggregatedProject.getBasedir().toPath();
+        List<Path> modulePaths = new LinkedList<>();
+        for ( String module :  aggregatedProject.getModules() )
+        {
+            modulePaths.add( basePath.resolve( module ).normalize() );
+        }
+
+        Set<MavenProject> aggregatedModules = new LinkedHashSet<>();
+
+        for ( Path modulePath : modulePaths )
+        {
+            MavenProject module = reactorProjectsMap.remove( modulePath );
+            if ( module != null )
+            {
+                aggregatedModules.addAll( modulesForAggregatedProject( module, reactorProjectsMap ) );
+            }
+        }
+
+        return aggregatedModules;
     }
 
     /**
@@ -2342,7 +2570,7 @@ public abstract class AbstractJavadocMojo
      * @return List of source paths.
      * @throws MavenReportException {@link MavenReportException}
      */
-    protected final Map<String, Collection<String>> getDependencySourcePaths()
+    protected final Collection<JavadocModule> getDependencySourcePaths()
         throws MavenReportException
     {
         try
@@ -2361,42 +2589,11 @@ public abstract class AbstractJavadocMojo
 
         final SourceResolverConfig config = getDependencySourceResolverConfig();
 
-        final List<TransformableFilter> andFilters = new ArrayList<>();
-
-        final List<String> dependencyIncludes = dependencySourceIncludes;
-        final List<String> dependencyExcludes = dependencySourceExcludes;
-
-        if ( !includeTransitiveDependencySources || isNotEmpty( dependencyIncludes ) || isNotEmpty(
-            dependencyExcludes ) )
-        {
-            if ( !includeTransitiveDependencySources )
-            {
-                andFilters.add( createDependencyArtifactFilter() );
-            }
-
-            if ( isNotEmpty( dependencyIncludes ) )
-            {
-                andFilters.add( new PatternInclusionsFilter( dependencyIncludes ) );
-            }
-
-            if ( isNotEmpty( dependencyExcludes ) )
-            {
-                andFilters.add( new PatternExclusionsFilter( dependencyExcludes ) );
-            }
-
-            config.withFilter( new AndFilter( andFilters ) );
-        }
-
         try
         {
             return resourceResolver.resolveDependencySourcePaths( config );
         }
-        catch ( final ArtifactResolutionException e )
-        {
-            throw new MavenReportException(
-                "Failed to resolve one or more javadoc source/resource artifacts:\n\n" + e.getMessage(), e );
-        }
-        catch ( final ArtifactNotFoundException e )
+        catch ( final ArtifactResolutionException | ArtifactNotFoundException e )
         {
             throw new MavenReportException(
                 "Failed to resolve one or more javadoc source/resource artifacts:\n\n" + e.getMessage(), e );
@@ -2430,9 +2627,42 @@ public abstract class AbstractJavadocMojo
      */
     private SourceResolverConfig getDependencySourceResolverConfig()
     {
-        return configureDependencySourceResolution(
-                        new SourceResolverConfig( project, session.getProjectBuildingRequest(),
-                                                  sourceDependencyCacheDir ).withReactorProjects( reactorProjects ) );
+        final List<TransformableFilter> andFilters = new ArrayList<>();
+
+        final List<String> dependencyIncludes = dependencySourceIncludes;
+        final List<String> dependencyExcludes = dependencySourceExcludes;
+
+        if ( !includeTransitiveDependencySources || isNotEmpty( dependencyIncludes ) || isNotEmpty(
+            dependencyExcludes ) )
+        {
+            if ( !includeTransitiveDependencySources )
+            {
+                andFilters.add( createDependencyArtifactFilter() );
+            }
+
+            if ( isNotEmpty( dependencyIncludes ) )
+            {
+                andFilters.add( new PatternInclusionsFilter( dependencyIncludes ) );
+            }
+
+            if ( isNotEmpty( dependencyExcludes ) )
+            {
+                andFilters.add( new PatternExclusionsFilter( dependencyExcludes ) );
+            }
+        }
+
+        return configureDependencySourceResolution( new SourceResolverConfig( project,
+                                                  getProjectBuildingRequest( project ),
+                                                  sourceDependencyCacheDir )
+                                                  .withReactorProjects( this.reactorProjects ) )
+                                                  .withFilter( new AndFilter( andFilters ) );
+
+    }
+
+    private ProjectBuildingRequest getProjectBuildingRequest( MavenProject currentProject )
+    {
+        return new DefaultProjectBuildingRequest( session.getProjectBuildingRequest() )
+                          .setRemoteRepositories( currentProject.getRemoteArtifactRepositories() );
     }
 
     /**
@@ -2442,16 +2672,17 @@ public abstract class AbstractJavadocMojo
      * @param files the project files
      * @return a boolean that indicates whether javadoc report can be generated or not
      */
-    protected boolean canGenerateReport( List<String> files )
+    protected boolean canGenerateReport( Map<Path, Collection<String>> files )
     {
-        boolean canGenerate = true;
-
-        if ( files.isEmpty() && StringUtils.isEmpty( subpackages ) )
+        for ( Collection<String> filesValues : files.values() )
         {
-            canGenerate = false;
+            if ( !filesValues.isEmpty() )
+            {
+                return true;
+            }
         }
 
-        return canGenerate;
+        return !StringUtils.isEmpty( subpackages );
     }
 
     // ----------------------------------------------------------------------
@@ -2466,17 +2697,16 @@ public abstract class AbstractJavadocMojo
      * @return a String that contains the exclude argument that will be used by javadoc
      * @throws MavenReportException
      */
-    private String getExcludedPackages( Collection<String> sourcePaths )
+    private String getExcludedPackages( Collection<Path> sourcePaths )
         throws MavenReportException
     {
         List<String> excludedNames = null;
 
         if ( StringUtils.isNotEmpty( sourcepath ) && StringUtils.isNotEmpty( subpackages ) )
         {
-            String[] excludedPackages = getExcludedPackages();
-            String[] subpackagesList = subpackages.split( "[:]" );
+            Collection<String> excludedPackages = getExcludedPackages();
 
-            excludedNames = JavadocUtil.getExcludedNames( sourcePaths, subpackagesList, excludedPackages );
+            excludedNames = JavadocUtil.getExcludedPackages( sourcePaths, excludedPackages );
         }
 
         String excludeArg = "";
@@ -2497,7 +2727,7 @@ public abstract class AbstractJavadocMojo
      *         string (colon (<code>:</code>) on Solaris or semi-colon (<code>;</code>) on Windows).
      * @see File#pathSeparator
      */
-    private String getSourcePath( Collection<String> sourcePaths )
+    private String getSourcePath( Collection<Path> sourcePaths )
     {
         String sourcePath = null;
 
@@ -2516,7 +2746,7 @@ public abstract class AbstractJavadocMojo
      * @return an array of String objects that contain the package names
      * @throws MavenReportException
      */
-    private String[] getExcludedPackages()
+    private Collection<String> getExcludedPackages()
         throws MavenReportException
     {
         Set<String> excluded = new LinkedHashSet<>();
@@ -2553,18 +2783,7 @@ public abstract class AbstractJavadocMojo
             excluded.addAll( trimValues( packageNames ) );
         }
 
-        String[] result = new String[excluded.size()];
-        if ( isNotEmpty( excluded ) )
-        {
-            int idx = 0;
-            for ( String exclude : excluded )
-            {
-                result[idx] = exclude.replace( '.', File.separatorChar );
-                idx++;
-            }
-        }
-
-        return result;
+        return excluded;
     }
 
     private static List<String> trimValues( List<String> items )
@@ -2584,7 +2803,7 @@ public abstract class AbstractJavadocMojo
 
     /**
      * Method that gets the classpath and modulepath elements that will be specified in the javadoc
-     * <code>-classpath</code> and <code>--module-path</code> parameter. 
+     * <code>-classpath</code> and <code>--module-path</code> parameter.
      * Since we have all the sources of the current reactor, it is sufficient to consider the
      * dependencies of the reactor modules, excluding the module artifacts which may not yet be available
      * when the reactor project is built for the first time.
@@ -2592,36 +2811,46 @@ public abstract class AbstractJavadocMojo
      * @return all classpath elements
      * @throws MavenReportException if any.
      */
-    private List<File> getPathElements()
+    private Collection<File> getPathElements()
         throws MavenReportException
     {
-        List<File> classpathElements = new ArrayList<>();
-        Map<String, Artifact> compileArtifactMap = new HashMap<>();
+        Set<File> classpathElements = new LinkedHashSet<>();
+        Map<String, Artifact> compileArtifactMap = new LinkedHashMap<>();
 
         if ( isTest() )
         {
             classpathElements.addAll( getProjectBuildOutputDirs( project ) );
         }
-        
+
         populateCompileArtifactMap( compileArtifactMap, project.getArtifacts() );
 
-        if ( isAggregator() && project.isExecutionRoot() )
+        if ( isAggregator() )
         {
+            Collection<MavenProject> aggregatorProjects = getAggregatedProjects();
+
             List<String> reactorArtifacts = new ArrayList<>();
-            for ( MavenProject p : reactorProjects )
+            for ( MavenProject p : aggregatorProjects )
             {
                 reactorArtifacts.add( p.getGroupId() + ':' + p.getArtifactId() );
             }
-            
-            TransformableFilter dependencyFilter = new AndFilter( Arrays.asList( 
+
+            TransformableFilter dependencyFilter = new AndFilter( Arrays.asList(
                                                                      new PatternExclusionsFilter( reactorArtifacts ),
                                                                      getDependencyScopeFilter() ) );
 
-            for ( MavenProject subProject : reactorProjects )
+            for ( MavenProject subProject : aggregatorProjects )
             {
                 if ( subProject != project )
                 {
-                    classpathElements.addAll( getProjectBuildOutputDirs( subProject ) );
+                    File projectArtifactFile = getClassesFile( subProject );
+                    if ( projectArtifactFile != null )
+                    {
+                        classpathElements.add( projectArtifactFile );
+                    }
+                    else
+                    {
+                        classpathElements.addAll( getProjectBuildOutputDirs( subProject ) );
+                    }
 
                     try
                     {
@@ -2632,22 +2861,26 @@ public abstract class AbstractJavadocMojo
                         sb.append( subProject.getArtifactId() ).append( ":" );
                         sb.append( subProject.getVersion() ).append( '\n' );
 
-                        ProjectBuildingRequest buildingRequest = session.getProjectBuildingRequest();
-                        buildingRequest =
-                            buildingRequest.setRemoteRepositories( subProject.getRemoteArtifactRepositories() );
-                        
+                        ProjectBuildingRequest buildingRequest = getProjectBuildingRequest( subProject );
+
+                        List<Dependency> managedDependencies = null;
+                        if ( subProject.getDependencyManagement() != null )
+                        {
+                            managedDependencies = subProject.getDependencyManagement().getDependencies();
+                        }
+
                         for ( ArtifactResult artifactResult
                                     : dependencyResolver.resolveDependencies( buildingRequest,
                                                                               subProject.getDependencies(),
-                                                                              null,
+                                                                              managedDependencies,
                                                                               dependencyFilter ) )
                         {
                             populateCompileArtifactMap( compileArtifactMap,
                                                         Collections.singletonList( artifactResult.getArtifact() ) );
-                            
+
                             sb.append( artifactResult.getArtifact().getFile() ).append( '\n' );
                         }
-                        
+
                         if ( getLog().isDebugEnabled() )
                         {
                             getLog().debug( sb.toString() );
@@ -2702,7 +2935,7 @@ public abstract class AbstractJavadocMojo
 
         try
         {
-            return artifactResolver.resolveArtifact( session.getProjectBuildingRequest(), coordinate ).getArtifact();
+            return artifactResolver.resolveArtifact( getProjectBuildingRequest( project ), coordinate ).getArtifact();
         }
         catch ( ArtifactResolverException e )
         {
@@ -2716,7 +2949,7 @@ public abstract class AbstractJavadocMojo
     protected final Toolchain getToolchain()
     {
         Toolchain tc = null;
-        
+
         if ( jdkToolchain != null )
         {
             // Maven 3.3.1 has plugin execution scoped Toolchain Support
@@ -2736,33 +2969,17 @@ public abstract class AbstractJavadocMojo
                     tc = tcs.get( 0 );
                 }
             }
-            catch ( NoSuchMethodException e )
-            {
-                // ignore
-            }
-            catch ( SecurityException e )
-            {
-                // ignore
-            }
-            catch ( IllegalAccessException e )
-            {
-                // ignore
-            }
-            catch ( IllegalArgumentException e )
-            {
-                // ignore
-            }
-            catch ( InvocationTargetException e )
+            catch ( SecurityException | ReflectiveOperationException e )
             {
                 // ignore
             }
         }
-        
+
         if ( tc == null )
         {
             tc = toolchainManager.getToolchainFromBuildContext( "jdk", session );
         }
-        
+
         return tc;
     }
 
@@ -2820,27 +3037,24 @@ public abstract class AbstractJavadocMojo
      */
     private String getBottomText()
     {
-        int currentYear = Calendar.getInstance().get( Calendar.YEAR );
-        String year = String.valueOf( currentYear );
+        final String inceptionYear = project.getInceptionYear();
 
-        String inceptionYear = project.getInceptionYear();
+        // get Reproducible Builds outputTimestamp date value or the current local date.
+        final LocalDate localDate = MavenArchiver.parseBuildOutputTimestamp( outputTimestamp )
+            .map( instant -> instant.atZone( ZoneOffset.UTC ).toLocalDate() )
+            .orElseGet( LocalDate::now );
 
-        String theBottom = StringUtils.replace( this.bottom, "{currentYear}", year );
+        final String currentYear = Integer.toString( localDate.getYear() );
 
-        if ( inceptionYear != null )
+        String theBottom = StringUtils.replace( this.bottom, "{currentYear}", currentYear );
+
+        if ( ( inceptionYear == null ) || inceptionYear.equals( currentYear ) )
         {
-            if ( inceptionYear.equals( year ) )
-            {
-                theBottom = StringUtils.replace( theBottom, "{inceptionYear}&#x2013;", "" );
-            }
-            else
-            {
-                theBottom = StringUtils.replace( theBottom, "{inceptionYear}", inceptionYear );
-            }
+            theBottom = StringUtils.replace( theBottom, "{inceptionYear}&#x2013;", "" );
         }
         else
         {
-            theBottom = StringUtils.replace( theBottom, "{inceptionYear}&#x2013;", "" );
+            theBottom = StringUtils.replace( theBottom, "{inceptionYear}", inceptionYear );
         }
 
         if ( project.getOrganization() == null )
@@ -2875,11 +3089,11 @@ public abstract class AbstractJavadocMojo
     /**
      * Method to get the stylesheet path file to be used by the Javadoc Tool.
      * <br/>
-     * If the {@link #stylesheetfile} is empty, return the file as String definded by {@link #stylesheet} value.
+     * If the {@code stylesheetfile} is empty, return the file as String definded by {@code stylesheet} value.
      * <br/>
-     * If the {@link #stylesheetfile} is defined, return the file as String.
+     * If the {@code stylesheetfile} is defined, return the file as String.
      * <br/>
-     * Note: since 2.6, the {@link #stylesheetfile} could be a path from a resource in the project source
+     * Note: since 2.6, the {@code stylesheetfile} could be a path from a resource in the project source
      * directories (i.e. <code>src/main/java</code>, <code>src/main/resources</code> or <code>src/main/javadoc</code>)
      * or from a resource in the Javadoc plugin dependencies.
      *
@@ -2887,32 +3101,81 @@ public abstract class AbstractJavadocMojo
      * @return the stylesheet file absolute path as String.
      * @see #getResource(List, String)
      */
-    private String getStylesheetFile( final File javadocOutputDirectory )
+    private Optional<File> getStylesheetFile( final File javadocOutputDirectory )
     {
         if ( StringUtils.isEmpty( stylesheetfile ) )
         {
             if ( "java".equalsIgnoreCase( stylesheet ) )
             {
                 // use the default Javadoc tool stylesheet
-                return null;
+                return Optional.empty();
             }
 
             // maven, see #copyDefaultStylesheet(File)
-            return new File( javadocOutputDirectory, DEFAULT_CSS_NAME ).getAbsolutePath();
+            return Optional.of( new File( javadocOutputDirectory, DEFAULT_CSS_NAME ) );
         }
 
         if ( new File( stylesheetfile ).exists() )
         {
-            return new File( stylesheetfile ).getAbsolutePath();
+            return Optional.of( new File( stylesheetfile ) );
         }
 
         return getResource( new File( javadocOutputDirectory, DEFAULT_CSS_NAME ), stylesheetfile );
     }
 
+    private void addAddStyleSheets( List<String> arguments ) throws MavenReportException
+    {
+        if ( addStylesheets == null )
+        {
+            return;
+        }
+
+        for ( String addStylesheet : addStylesheets )
+        {
+            Optional<File> styleSheet = getAddStylesheet( getJavadocDirectory(), addStylesheet );
+
+            if ( styleSheet.isPresent() )
+            {
+                addArgIfNotEmpty( arguments, "--add-stylesheet",
+                                  JavadocUtil.quotedPathArgument( styleSheet.get().getAbsolutePath() ),
+                                  JavaVersion.parse( "10" ) );
+            }
+        }
+    }
+
+
+    private Optional<File> getAddStylesheet( final File javadocOutputDirectory, final String stylesheet )
+            throws MavenReportException
+    {
+        if ( StringUtils.isEmpty( stylesheet ) )
+        {
+            return Optional.empty();
+        }
+
+        File addstylesheetfile = new File( getJavadocDirectory(), stylesheet );
+        if ( addstylesheetfile.exists() )
+        {
+            Optional<File> stylesheetfile = getStylesheetFile( javadocOutputDirectory );
+            if ( stylesheetfile.isPresent() )
+            {
+                if ( stylesheetfile.get().getName().equals( addstylesheetfile.getName() ) )
+                {
+                    throw new MavenReportException( "additional stylesheet must have a different name "
+                                                        + "than stylesheetfile: " + stylesheetfile.get().getName() );
+                }
+            }
+
+            return Optional.of( addstylesheetfile );
+        }
+
+        throw new MavenReportException( "additional stylesheet file does not exist: "
+                                            + addstylesheetfile.getAbsolutePath() );
+    }
+
     /**
      * Method to get the help file to be used by the Javadoc Tool.
      * <br/>
-     * Since 2.6, the {@link #helpfile} could be a path from a resource in the project source
+     * Since 2.6, the {@code helpfile} could be a path from a resource in the project source
      * directories (i.e. <code>src/main/java</code>, <code>src/main/resources</code> or <code>src/main/javadoc</code>)
      * or from a resource in the Javadoc plugin dependencies.
      *
@@ -2921,16 +3184,16 @@ public abstract class AbstractJavadocMojo
      * @see #getResource(File, String)
      * @since 2.6
      */
-    private String getHelpFile( final File javadocOutputDirectory )
+    private Optional<File> getHelpFile( final File javadocOutputDirectory )
     {
         if ( StringUtils.isEmpty( helpfile ) )
         {
-            return null;
+            return Optional.empty();
         }
 
         if ( new File( helpfile ).exists() )
         {
-            return new File( helpfile ).getAbsolutePath();
+            return Optional.of( new File( helpfile ) );
         }
 
         return getResource( new File( javadocOutputDirectory, "help-doc.html" ), helpfile );
@@ -3097,15 +3360,14 @@ public abstract class AbstractJavadocMojo
                 taglet.getTagletArtifact().getArtifactId() ) ) && ( StringUtils.isNotEmpty(
                 taglet.getTagletArtifact().getVersion() ) ) )
             {
-                pathParts.addAll( getArtifactsAbsolutePath( taglet.getTagletArtifact() ) );
-
-                pathParts = JavadocUtil.pruneFiles( pathParts );
+                pathParts.addAll( JavadocUtil.pruneFiles( getArtifactsAbsolutePath( taglet.getTagletArtifact() ) ) );
             }
             else if ( StringUtils.isNotEmpty( taglet.getTagletpath() ) )
             {
-                pathParts.add( taglet.getTagletpath() );
-
-                pathParts = JavadocUtil.pruneDirs( project, pathParts );
+                for ( Path dir : JavadocUtil.pruneDirs( project, Collections.singletonList( taglet.getTagletpath() ) ) )
+                {
+                    pathParts.add( dir.toString()  );
+                }
             }
         }
 
@@ -3509,7 +3771,7 @@ public abstract class AbstractJavadocMojo
             coordinate.setVersion( javadocArtifact.getVersion() );
 
             Iterable<ArtifactResult> deps =
-                dependencyResolver.resolveDependencies( session.getProjectBuildingRequest(), coordinate,
+                dependencyResolver.resolveDependencies( getProjectBuildingRequest( project ), coordinate,
                                                         ScopeFilter.including( "compile", "provided" ) );
             for ( ArtifactResult a : deps )
             {
@@ -3533,7 +3795,7 @@ public abstract class AbstractJavadocMojo
      *
      * @param javadocArtifact the {@link JavadocPathArtifact} to resolve
      * @return a resolved {@link Artifact}
-     * @throws ArtifactResolverException
+     * @throws ArtifactResolverException issue while resolving artifact
      */
     private Artifact createAndResolveArtifact( JavadocPathArtifact javadocArtifact )
         throws ArtifactResolverException
@@ -3542,8 +3804,9 @@ public abstract class AbstractJavadocMojo
         coordinate.setGroupId( javadocArtifact.getGroupId() );
         coordinate.setArtifactId( javadocArtifact.getArtifactId() );
         coordinate.setVersion( javadocArtifact.getVersion() );
+        coordinate.setClassifier( javadocArtifact.getClassifier() );
 
-        return artifactResolver.resolveArtifact( session.getProjectBuildingRequest(), coordinate ).getArtifact();
+        return artifactResolver.resolveArtifact( getProjectBuildingRequest( project ), coordinate ).getArtifact();
     }
 
     /**
@@ -3579,40 +3842,67 @@ public abstract class AbstractJavadocMojo
      */
     private void addProxyArg( Commandline cmd )
     {
-        if ( settings == null || settings.getActiveProxy() == null )
+        if ( settings == null || settings.getProxies().isEmpty() )
         {
             return;
         }
 
-        Proxy activeProxy = settings.getActiveProxy();
-        String protocol = StringUtils.isNotEmpty( activeProxy.getProtocol() ) ? activeProxy.getProtocol() + "." : "";
+        Map<String, Proxy> activeProxies = new HashMap<>();
 
-        if ( StringUtils.isNotEmpty( activeProxy.getHost() ) )
+        for ( Proxy proxy : settings.getProxies() )
         {
-            cmd.createArg().setValue( "-J-D" + protocol + "proxySet=true" );
-            cmd.createArg().setValue( "-J-D" + protocol + "proxyHost=" + activeProxy.getHost() );
-
-            if ( activeProxy.getPort() > 0 )
+            if ( proxy.isActive() )
             {
-                cmd.createArg().setValue( "-J-D" + protocol + "proxyPort=" + activeProxy.getPort() );
+                String protocol = proxy.getProtocol();
+
+                if ( !activeProxies.containsKey( protocol ) )
+            {
+                    activeProxies.put( protocol, proxy );
+                }
+            }
             }
 
-            if ( StringUtils.isNotEmpty( activeProxy.getNonProxyHosts() ) )
+        if ( activeProxies.containsKey( "https" ) )
+        {
+            Proxy httpsProxy = activeProxies.get( "https" );
+            if ( StringUtils.isNotEmpty( httpsProxy.getHost() ) )
             {
-                cmd.createArg().setValue(
-                    "-J-D" + protocol + "nonProxyHosts=\"" + activeProxy.getNonProxyHosts() + "\"" );
-            }
+                cmd.createArg().setValue( "-J-Dhttps.proxyHost=" + httpsProxy.getHost() );
+                cmd.createArg().setValue( "-J-Dhttps.proxyPort=" + httpsProxy.getPort() );
 
-            if ( StringUtils.isNotEmpty( activeProxy.getUsername() ) )
-            {
-                cmd.createArg().setValue( "-J-Dhttp.proxyUser=\"" + activeProxy.getUsername() + "\"" );
-
-                if ( StringUtils.isNotEmpty( activeProxy.getPassword() ) )
+                if ( StringUtils.isNotEmpty( httpsProxy.getNonProxyHosts() )
+                     && ( !activeProxies.containsKey( "http" )
+                          || StringUtils.isEmpty( activeProxies.get( "http" ).getNonProxyHosts() ) ) )
                 {
-                    cmd.createArg().setValue( "-J-Dhttp.proxyPassword=\"" + activeProxy.getPassword() + "\"" );
+                    cmd.createArg().setValue( "-J-Dhttp.nonProxyHosts=\""
+                                              + httpsProxy.getNonProxyHosts().replace( "|", "^|" ) + "\"" );
                 }
             }
         }
+
+        if ( activeProxies.containsKey( "http" ) )
+        {
+            Proxy httpProxy = activeProxies.get( "http" );
+            if ( StringUtils.isNotEmpty( httpProxy.getHost() ) )
+            {
+                cmd.createArg().setValue( "-J-Dhttp.proxyHost=" + httpProxy.getHost() );
+                cmd.createArg().setValue( "-J-Dhttp.proxyPort=" + httpProxy.getPort() );
+
+                if ( !activeProxies.containsKey( "https" ) )
+            {
+                    cmd.createArg().setValue( "-J-Dhttps.proxyHost=" + httpProxy.getHost() );
+                    cmd.createArg().setValue( "-J-Dhttps.proxyPort=" + httpProxy.getPort() );
+                }
+
+                if ( StringUtils.isNotEmpty( httpProxy.getNonProxyHosts() ) )
+                {
+                    cmd.createArg().setValue( "-J-Dhttp.nonProxyHosts=\""
+                                              + httpProxy.getNonProxyHosts().replace( "|", "^|" ) + "\"" );
+                }
+            }
+        }
+
+        // We bravely ignore FTP because no one (probably) uses FTP for Javadoc
     }
 
     /**
@@ -3669,13 +3959,41 @@ public abstract class AbstractJavadocMojo
 
             return javadocExe.getAbsolutePath();
         }
-
+        // CHECKSTYLE_OFF: LineLength
         // ----------------------------------------------------------------------
         // Try to find javadocExe from System.getProperty( "java.home" )
-        // By default, System.getProperty( "java.home" ) = JRE_HOME and JRE_HOME
-        // should be in the JDK_HOME
+        // "java.home" is the "Installation directory for Java Runtime
+        // Environment (JRE)" used to run this code. I.e. it is the parent of
+        // the directory containing the `java` command used to start this
+        // application. It does not necessarily have any relation to the
+        // environment variable JAVA_HOME.
+        //
+        // In Java 8 and below the JRE is separate from the JDK. When
+        // installing the JDK to my-dir/ the javadoc command is installed in
+        // my-dir/bin/javadoc, the JRE is installed to my-dir/jre, and hence
+        // the java command is installed to my-dir/jre/bin/java. In this
+        // configuration "java.home" is mydir/jre/, threfore the relative path
+        // to the javadoc command is ../bin/javadoc.
+        //
+        // In Java 9 and above the JRE is no longer in a subdirectory of the
+        // JDK, i.e. the JDK and the JDK are merged. In this case the java
+        // command is installed to my-dir/bin/java along side the javadoc
+        // command. So the relative path from "java.home" to the javadoc
+        // command is bin/javadoc.
+        //
+        // References
+        //
+        // "System Properties" in "The Java Tutorials"
+        // https://docs.oracle.com/javase/tutorial/essential/environment/sysprop.html
+        //
+        // "Changes to the Installed JDK/JRE Image" in "JDK 9 Migration Guide"
+        // https://docs.oracle.com/javase/9/migrate/toc.htm?xd_co_f=122a7174-9132-4acd-b122-fac02f8c4fef#JSMIG-GUID-D867DCCC-CEB5-4AFA-9D11-9C62B7A3FAB1
+        //
+        // "JEP 220: Modular Run-Time Images"
+        // http://openjdk.java.net/jeps/220
         // ----------------------------------------------------------------------
         // For IBM's JDK 1.2
+        // CHECKSTYLE_ON: LineLength
         if ( SystemUtils.IS_OS_AIX )
         {
             javadocExe =
@@ -3688,8 +4006,14 @@ public abstract class AbstractJavadocMojo
         {
             javadocExe = new File( SystemUtils.getJavaHome() + File.separator + "bin", javadocCommand );
         }
+        else if ( isJavaVersionAtLeast( org.apache.commons.lang3.JavaVersion.JAVA_9 ) )
+        {
+            javadocExe =
+                new File( SystemUtils.getJavaHome() + File.separator + "bin", javadocCommand );
+        }
         else
         {
+            // Java <= 8
             javadocExe =
                 new File( SystemUtils.getJavaHome() + File.separator + ".." + File.separator + "bin", javadocCommand );
         }
@@ -3739,25 +4063,7 @@ public abstract class AbstractJavadocMojo
         {
             jVersion = JavadocUtil.getJavadocVersion( jExecutable );
         }
-        catch ( IOException e )
-        {
-            if ( getLog().isWarnEnabled() )
-            {
-                getLog().warn( "Unable to find the javadoc version: " + e.getMessage() );
-                getLog().warn( "Using the Java version instead of, i.e. " + JAVA_VERSION );
-            }
-            jVersion = JAVA_VERSION;
-        }
-        catch ( CommandLineException e )
-        {
-            if ( getLog().isWarnEnabled() )
-            {
-                getLog().warn( "Unable to find the javadoc version: " + e.getMessage() );
-                getLog().warn( "Using the Java version instead of, i.e. " + JAVA_VERSION );
-            }
-            jVersion = JAVA_VERSION;
-        }
-        catch ( IllegalArgumentException e )
+        catch ( IOException | CommandLineException | IllegalArgumentException e )
         {
             if ( getLog().isWarnEnabled() )
             {
@@ -3825,8 +4131,8 @@ public abstract class AbstractJavadocMojo
      * @param b                   the flag which controls if the argument is added or not.
      * @param value               the argument value to be added.
      * @param requiredJavaVersion the required Java version, for example 1.31f or 1.4f
-     * @see #addArgIf(java.util.List, boolean, String)
-     * @see #isJavaDocVersionAtLeast(float)
+     * @see #addArgIf(List, boolean, String)
+     * @see #isJavaDocVersionAtLeast(JavaVersion)
      */
     private void addArgIf( List<String> arguments, boolean b, String value, JavaVersion requiredJavaVersion )
     {
@@ -3856,7 +4162,7 @@ public abstract class AbstractJavadocMojo
      * @param arguments a list of arguments, not null
      * @param key       the argument name.
      * @param value     the argument value to be added.
-     * @see #addArgIfNotEmpty(java.util.List, String, String, boolean)
+     * @see #addArgIfNotEmpty(List, String, String, boolean)
      */
     private void addArgIfNotEmpty( List<String> arguments, String key, String value )
     {
@@ -3876,7 +4182,7 @@ public abstract class AbstractJavadocMojo
      * @param splitValue          if <code>true</code> given value will be tokenized by comma
      * @param requiredJavaVersion the required Java version, for example 1.31f or 1.4f
      * @see #addArgIfNotEmpty(List, String, String, boolean, boolean)
-     * @see #isJavaDocVersionAtLeast(float)
+     * @see #isJavaDocVersionAtLeast(JavaVersion)
      */
     private void addArgIfNotEmpty( List<String> arguments, String key, String value, boolean repeatKey,
                                    boolean splitValue, JavaVersion requiredJavaVersion )
@@ -3969,7 +4275,7 @@ public abstract class AbstractJavadocMojo
      * @param key                 the argument name.
      * @param value               the argument value to be added.
      * @param requiredJavaVersion the required Java version, for example 1.31f or 1.4f
-     * @see #addArgIfNotEmpty(java.util.List, String, String, float, boolean)
+     * @see #addArgIfNotEmpty(List, String, String, JavaVersion, boolean)
      */
     private void addArgIfNotEmpty( List<String> arguments, String key, String value,
                                    JavaVersion requiredJavaVersion )
@@ -3986,8 +4292,8 @@ public abstract class AbstractJavadocMojo
      * @param value               the argument value to be added.
      * @param requiredJavaVersion the required Java version, for example 1.31f or 1.4f
      * @param repeatKey           repeat or not the key in the command line
-     * @see #addArgIfNotEmpty(java.util.List, String, String)
-     * @see #isJavaDocVersionAtLeast(float)
+     * @see #addArgIfNotEmpty(List, String, String)
+     * @see #isJavaDocVersionAtLeast
      */
     private void addArgIfNotEmpty( List<String> arguments, String key, String value, JavaVersion requiredJavaVersion,
                                    boolean repeatKey )
@@ -4009,25 +4315,21 @@ public abstract class AbstractJavadocMojo
     }
 
     /**
-     * Convenience method to process {@link #offlineLinks} values as individual <code>-linkoffline</code>
+     * Convenience method to process {@code offlineLinks} values as individual <code>-linkoffline</code>
      * javadoc options.
      * <br/>
-     * If {@link #detectOfflineLinks}, try to add javadoc apidocs according Maven conventions for all modules given
+     * If {@code detectOfflineLinks}, try to add javadoc apidocs according Maven conventions for all modules given
      * in the project.
      *
      * @param arguments a list of arguments, not null
      * @throws MavenReportException if any
      * @see #offlineLinks
      * @see #getModulesLinks()
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#package-list">package-list spec</a>
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#package-list">package-list spec</a>
      */
-    private void addLinkofflineArguments( List<String> arguments )
+    private void addLinkofflineArguments( List<String> arguments, Set<OfflineLink> offlineLinksList )
         throws MavenReportException
     {
-        Set<OfflineLink> offlineLinksList = collectOfflineLinks();
-
-        offlineLinksList.addAll( getModulesLinks() );
-
         for ( OfflineLink offlineLink : offlineLinksList )
         {
             String url = offlineLink.getUrl();
@@ -4051,9 +4353,18 @@ public abstract class AbstractJavadocMojo
         }
     }
 
+    private Set<OfflineLink> getLinkofflines() throws MavenReportException
+    {
+        Set<OfflineLink> offlineLinksList = collectOfflineLinks();
+
+        offlineLinksList.addAll( getModulesLinks() );
+
+        return offlineLinksList;
+    }
+
     /**
      * Convenience method to process {@link #links} values as individual <code>-link</code> javadoc options.
-     * If {@link #detectLinks}, try to add javadoc apidocs according Maven conventions for all dependencies given
+     * If {@code detectLinks}, try to add javadoc apidocs according Maven conventions for all dependencies given
      * in the project.
      * <br/>
      * According the Javadoc documentation, all defined link should have <code>${link}/package-list</code> fetchable.
@@ -4065,10 +4376,10 @@ public abstract class AbstractJavadocMojo
      * </ul>
      *
      * @param arguments a list of arguments, not null
-     * @throws MavenReportException
+     * @throws MavenReportException issue while generating report
      * @see #detectLinks
      * @see #getDependenciesLinks()
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#package-list">package-list spec</a>
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#package-list">package-list spec</a>
      */
     private void addLinkArguments( List<String> arguments )
         throws MavenReportException
@@ -4078,6 +4389,11 @@ public abstract class AbstractJavadocMojo
         for ( String link : links )
         {
             if ( StringUtils.isEmpty( link ) )
+            {
+                continue;
+            }
+
+            if ( isOffline && !link.startsWith( "file:" ) )
             {
                 continue;
             }
@@ -4144,9 +4460,9 @@ public abstract class AbstractJavadocMojo
     }
 
     /**
-     * Copies the {@link #DEFAULT_CSS_NAME} css file from the current class
-     * loader to the <code>outputDirectory</code> only if {@link #stylesheetfile} is empty and
-     * {@link #stylesheet} is equals to <code>maven</code>.
+     * Copies the {@code DEFAULT_CSS_NAME} css file from the current class
+     * loader to the <code>outputDirectory</code> only if {@code stylesheetfile} is empty and
+     * {@code stylesheet} is equals to <code>maven</code>.
      *
      * @param anOutputDirectory the output directory
      * @throws java.io.IOException if any
@@ -4177,7 +4493,7 @@ public abstract class AbstractJavadocMojo
      *
      * @param anOutputDirectory the output directory
      * @throws java.io.IOException if any
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.2.html#docfiles">Reference
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.2.html#docfiles">Reference
      *      Guide, Copies new "doc-files" directory for holding images and examples</a>
      * @see #docfilessubdirs
      */
@@ -4213,9 +4529,9 @@ public abstract class AbstractJavadocMojo
             JavadocUtil.copyJavadocResources( anOutputDirectory, getJavadocDirectory(), excludedocfilessubdir );
         }
 
-        if ( isAggregator() && project.isExecutionRoot() )
+        if ( isAggregator() )
         {
-            for ( MavenProject subProject : reactorProjects )
+            for ( MavenProject subProject : getAggregatedProjects()  )
             {
                 if ( subProject != project && getJavadocDirectory() != null )
                 {
@@ -4304,34 +4620,9 @@ public abstract class AbstractJavadocMojo
 
     /**
      * @param sourcePaths could be null
-     * @param files       not null
      * @return the list of package names for files in the sourcePaths
      */
-    private List<String> getPackageNames( Collection<String> sourcePaths, List<String> files )
-    {
-        return getPackageNamesOrFilesWithUnnamedPackages( sourcePaths, files, true );
-    }
-
-    /**
-     * @param sourcePaths could be null
-     * @param files       not null
-     * @return a list files with unnamed package names for files in the sourecPaths
-     */
-    private List<String> getFilesWithUnnamedPackages( Collection<String> sourcePaths, List<String> files )
-    {
-        return getPackageNamesOrFilesWithUnnamedPackages( sourcePaths, files, false );
-    }
-
-    /**
-     * @param sourcePaths     not null, containing absolute and relative paths
-     * @param files           not null, containing list of quoted files
-     * @param onlyPackageName boolean for only package name
-     * @return a list of package names or files with unnamed package names, depending the value of the unnamed flag
-     * @see #getFiles(List)
-     * @see #getSourcePaths()
-     */
-    private List<String> getPackageNamesOrFilesWithUnnamedPackages( Collection<String> sourcePaths, List<String> files,
-                                                                    boolean onlyPackageName )
+    private List<String> getPackageNames( Map<Path, Collection<String>> sourcePaths )
     {
         List<String> returnList = new ArrayList<>();
 
@@ -4340,50 +4631,204 @@ public abstract class AbstractJavadocMojo
             return returnList;
         }
 
-        for ( String currentFile : files )
+        for ( Entry<Path, Collection<String>> currentPathEntry : sourcePaths.entrySet() )
         {
-            currentFile = currentFile.replace( '\\', '/' );
-
-            for ( String currentSourcePath : sourcePaths )
+            for ( String currentFile : currentPathEntry.getValue() )
             {
-                currentSourcePath = currentSourcePath.replace( '\\', '/' );
-
-                if ( !currentSourcePath.endsWith( "/" ) )
+                /*
+                 * Remove the miscellaneous files
+                 * https://docs.oracle.com/javase/1.4.2/docs/tooldocs/solaris/javadoc.html#unprocessed
+                 */
+                if ( currentFile.contains( "doc-files" ) )
                 {
-                    currentSourcePath += "/";
+                    continue;
                 }
 
-                if ( currentFile.contains( currentSourcePath ) )
+                int lastIndexOfSeparator = currentFile.lastIndexOf( "/" );
+                if ( lastIndexOfSeparator != -1 )
                 {
-                    String packagename = currentFile.substring( currentSourcePath.length() + 1 );
+                    String packagename = currentFile.substring( 0, lastIndexOfSeparator ).replace( '/', '.' );
 
-                    /*
-                     * Remove the miscellaneous files
-                     * http://docs.oracle.com/javase/1.4.2/docs/tooldocs/solaris/javadoc.html#unprocessed
-                     */
-                    if ( packagename.contains( "doc-files" ) )
+                    if ( !returnList.contains( packagename ) )
                     {
-                        continue;
-                    }
-
-                    if ( onlyPackageName && packagename.lastIndexOf( "/" ) != -1 )
-                    {
-                        packagename = packagename.substring( 0, packagename.lastIndexOf( "/" ) );
-                        packagename = packagename.replace( '/', '.' );
-
-                        if ( !returnList.contains( packagename ) )
-                        {
-                            returnList.add( packagename );
-                        }
-                    }
-                    if ( !onlyPackageName && packagename.lastIndexOf( "/" ) == -1 )
-                    {
-                        returnList.add( currentFile );
+                        returnList.add( packagename );
                     }
                 }
             }
         }
 
+        return returnList;
+    }
+
+    /**
+     * @param javadocModules     not null
+     * @return a list of exported package names for files in allSourcePaths
+     * @throws MavenReportException if any
+     * @see #getFiles
+     * @see #getSourcePaths()
+     */
+    private Collection<String> getPackageNamesRespectingJavaModules( Collection<JavadocModule> javadocModules )
+            throws MavenReportException
+    {
+        if ( !StringUtils.isEmpty( sourcepath ) )
+        {
+            return Collections.emptyList();
+        }
+
+        Set<String> returnList = new LinkedHashSet<>();
+        for ( JavadocModule javadocModule  : javadocModules )
+        {
+            Collection<Path> artifactSourcePaths = javadocModule.getSourcePaths();
+            Set<String> exportedPackages = new HashSet<>();
+            boolean exportAllPackages;
+            ResolvePathResult resolvedPath = getResolvePathResult( javadocModule.getArtifactFile() );
+            if ( resolvedPath != null && resolvedPath.getModuleNameSource() == ModuleNameSource.MODULEDESCRIPTOR )
+            {
+                Set<JavaModuleDescriptor.JavaExports> exports = resolvedPath.getModuleDescriptor().exports();
+                if ( exports.isEmpty() )
+                {
+                    continue;
+                }
+                for ( JavaModuleDescriptor.JavaExports export : exports )
+                {
+                    exportedPackages.add( export.source() );
+                }
+                exportAllPackages = false;
+            }
+            else
+            {
+                exportAllPackages = true;
+            }
+
+            for ( Map.Entry<Path, Collection<String>> currentPathEntry : getFiles( artifactSourcePaths ).entrySet() )
+            {
+                for ( String currentFile : currentPathEntry.getValue() )
+                {
+                    /*
+                     * Remove the miscellaneous files
+                     * https://docs.oracle.com/javase/1.4.2/docs/tooldocs/solaris/javadoc.html#unprocessed
+                     */
+                    if ( currentFile.contains( "doc-files" ) )
+                    {
+                        continue;
+                    }
+
+                    int lastIndexOfSeparator = currentFile.lastIndexOf( '/' );
+                    if ( lastIndexOfSeparator != -1 )
+                    {
+                        String packagename =
+                            currentFile.substring( 0, lastIndexOfSeparator ).replace( '/', '.' );
+
+                        if ( exportAllPackages || exportedPackages.contains( packagename ) )
+                        {
+                            returnList.add( packagename );
+                        }
+                    }
+                }
+            }
+        }
+
+        return returnList;
+    }
+
+    /**
+     * @param sourcePaths could be null
+     * @return a list files with unnamed package names for files in the sourcePaths
+     */
+    private List<String> getFilesWithUnnamedPackages( Map<Path, Collection<String>> sourcePaths )
+    {
+        List<String> returnList = new ArrayList<>();
+
+        if ( !StringUtils.isEmpty( sourcepath ) )
+        {
+            return returnList;
+        }
+
+        for ( Entry<Path, Collection<String>> currentPathEntry : sourcePaths.entrySet() )
+        {
+            Path currentSourcePath = currentPathEntry.getKey();
+
+            for ( String currentFile : currentPathEntry.getValue() )
+            {
+                /*
+                 * Remove the miscellaneous files
+                 * https://docs.oracle.com/javase/1.4.2/docs/tooldocs/solaris/javadoc.html#unprocessed
+                 */
+                if ( currentFile.contains( "doc-files" ) )
+                {
+                    continue;
+                }
+
+                if ( currentFile.indexOf( File.separatorChar ) == -1 )
+                {
+                    returnList.add( currentSourcePath.resolve( currentFile ).toAbsolutePath().toString() );
+                }
+            }
+        }
+
+        return returnList;
+    }
+
+    /**
+     * Either return only the module descriptor or all sourcefiles per sourcepath
+     * @param sourcePaths could be null
+     * @return a list of files
+     */
+    private List<String> getSpecialFiles( Map<Path, Collection<String>> sourcePaths )
+    {
+        if ( !StringUtils.isEmpty( sourcepath ) )
+        {
+            return new ArrayList<>();
+        }
+
+        boolean containsModuleDescriptor = false;
+        for ( Collection<String> sourcepathFiles : sourcePaths.values() )
+        {
+            containsModuleDescriptor = sourcepathFiles.contains( "module-info.java" );
+            if ( containsModuleDescriptor )
+            {
+                break;
+            }
+        }
+
+        if ( containsModuleDescriptor )
+        {
+            return getModuleSourcePathFiles( sourcePaths );
+        }
+        else
+        {
+            return getFilesWithUnnamedPackages( sourcePaths );
+        }
+    }
+
+    private List<String> getModuleSourcePathFiles( Map<Path, Collection<String>> sourcePaths )
+    {
+        List<String> returnList = new ArrayList<>();
+
+        for ( Entry<Path, Collection<String>> currentPathEntry : sourcePaths.entrySet() )
+        {
+            Path currentSourcePath = currentPathEntry.getKey();
+            if ( currentPathEntry.getValue().contains( "module-info.java" ) )
+            {
+                returnList.add( currentSourcePath.resolve( "module-info.java" ).toAbsolutePath().toString() );
+            }
+            else
+            {
+                for ( String currentFile : currentPathEntry.getValue() )
+                {
+                    /*
+                     * Remove the miscellaneous files
+                     * https://docs.oracle.com/javase/1.4.2/docs/tooldocs/solaris/javadoc.html#unprocessed
+                     */
+                    if ( currentFile.contains( "doc-files" ) )
+                    {
+                        continue;
+                    }
+
+                    returnList.add( currentSourcePath.resolve( currentFile ).toAbsolutePath().toString() );
+                }
+            }
+        }
         return returnList;
     }
 
@@ -4395,7 +4840,7 @@ public abstract class AbstractJavadocMojo
      * @param arguments              not null
      * @param javadocOutputDirectory not null
      * @throws MavenReportException if any
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#argumentfiles">
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#argumentfiles">
      *      Reference Guide, Command line argument files</a>
      * @see #OPTIONS_FILE_NAME
      */
@@ -4405,12 +4850,21 @@ public abstract class AbstractJavadocMojo
         File optionsFile = new File( javadocOutputDirectory, OPTIONS_FILE_NAME );
 
         StringBuilder options = new StringBuilder();
-        options.append( StringUtils.join( arguments.toArray( new String[arguments.size()] ),
+        options.append( StringUtils.join( arguments.iterator(),
                                           SystemUtils.LINE_SEPARATOR ) );
 
+        Charset outputFileEncoding;
+        if ( JAVA_VERSION.isAtLeast( "9" ) && JAVA_VERSION.isBefore( "12" ) )
+        {
+            outputFileEncoding = StandardCharsets.UTF_8;
+        }
+        else
+        {
+            outputFileEncoding = Charset.defaultCharset();
+        }
         try
         {
-            FileUtils.fileWrite( optionsFile.getAbsolutePath(), null /* platform encoding */, options.toString() );
+            Files.write( optionsFile.toPath(), Collections.singleton( options ), outputFileEncoding );
         }
         catch ( IOException e )
         {
@@ -4429,13 +4883,13 @@ public abstract class AbstractJavadocMojo
      * @param javadocOutputDirectory not null
      * @param files                  not null
      * @throws MavenReportException if any
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#argumentfiles">
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#argumentfiles">
      *      Reference Guide, Command line argument files
      *      </a>
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#runningjavadoc">
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/whatsnew-1.4.html#runningjavadoc">
      *      What s New in Javadoc 1.4
      *      </a>
-     * @see #isJavaDocVersionAtLeast(float)
+     * @see #isJavaDocVersionAtLeast(JavaVersion)
      * @see #ARGFILE_FILE_NAME
      * @see #FILES_FILE_NAME
      */
@@ -4454,10 +4908,26 @@ public abstract class AbstractJavadocMojo
             cmd.createArg().setValue( "@" + FILES_FILE_NAME );
         }
 
+        List<String> quotedFiles = new ArrayList<>( files.size() );
+        for ( String file : files )
+        {
+            quotedFiles.add( JavadocUtil.quotedPathArgument( file ) );
+        }
+
+        Charset cs;
+        if ( JavaVersion.JAVA_SPECIFICATION_VERSION.isAtLeast( "9" )
+            && JavaVersion.JAVA_SPECIFICATION_VERSION.isBefore( "12" ) )
+        {
+            cs = StandardCharsets.UTF_8;
+        }
+        else
+        {
+            cs = Charset.defaultCharset();
+        }
+
         try
         {
-            FileUtils.fileWrite( argfileFile.getAbsolutePath(), null /* platform encoding */,
-                                 StringUtils.join( files.iterator(), SystemUtils.LINE_SEPARATOR ) );
+            Files.write( argfileFile.toPath(), quotedFiles, cs );
         }
         catch ( IOException e )
         {
@@ -4474,11 +4944,11 @@ public abstract class AbstractJavadocMojo
      * @param javadocOutputDirectory not null
      * @param packageNames           not null
      * @throws MavenReportException if any
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#argumentfiles">
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#argumentfiles">
      *      Reference Guide, Command line argument files</a>
      * @see #PACKAGES_FILE_NAME
      */
-    private void addCommandLinePackages( Commandline cmd, File javadocOutputDirectory, List<String> packageNames )
+    private void addCommandLinePackages( Commandline cmd, File javadocOutputDirectory, Collection<String> packageNames )
         throws MavenReportException
     {
         File packagesFile = new File( javadocOutputDirectory, PACKAGES_FILE_NAME );
@@ -4611,7 +5081,7 @@ public abstract class AbstractJavadocMojo
         }
 
         // overview
-        if ( ( getOverview() != null ) && nooverview )
+        if ( getOverview() != null && getOverview().exists() && nooverview )
         {
             throw new MavenReportException( "Option <nooverview/> conflicts with <overview/>" );
         }
@@ -4628,12 +5098,6 @@ public abstract class AbstractJavadocMojo
         {
             throw new MavenReportException( "Option <stylesheet/> supports only \"maven\" or \"java\" value." );
         }
-
-        // default java api links
-        if ( javaApiLinks == null || javaApiLinks.size() == 0 )
-        {
-            javaApiLinks = DEFAULT_JAVA_API_LINKS;
-        }
     }
 
     /**
@@ -4643,18 +5107,21 @@ public abstract class AbstractJavadocMojo
      * Standard Javadoc Options wrapped by this Plugin.
      *
      * @param javadocOutputDirectory not null
-     * @param arguments   not null
-     * @param sourcePaths not null
+     * @param arguments              not null
+     * @param allSourcePaths         not null
      * @throws MavenReportException if any
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#javadocoptions">http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#javadocoptions</a>
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#javadocoptions">https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#javadocoptions</a>
      */
     private void addJavadocOptions( File javadocOutputDirectory,
                                     List<String> arguments,
-                                    Map<String, Collection<String>> allSourcePaths )
+                                    Collection<JavadocModule> allSourcePaths,
+                                    Set<OfflineLink> offlineLinks )
         throws MavenReportException
     {
-        Collection<String> sourcePaths = collect( allSourcePaths.values() );
-        
+        Collection<Path> sourcePaths = allSourcePaths.stream()
+                                                     .flatMap( e -> e.getSourcePaths().stream() )
+                                                     .collect( Collectors.toList() );
+
         validateJavadocOptions();
 
         // see com.sun.tools.javadoc.Start#parseAndExecute(String argv[])
@@ -4681,98 +5148,294 @@ public abstract class AbstractJavadocMojo
             addArgIf( arguments, breakiterator, "-breakiterator", SINCE_JAVADOC_1_5 );
         }
 
-        List<String> roots = getProjectSourceRoots( getProject() );
-        
-        File mainDescriptor = findMainDescriptor( roots );
-
-        final LocationManager locationManager = new LocationManager();
-
-        if ( mainDescriptor != null && !isTest() )
+        List<MavenProject> aggregatedProjects = reactorProjects; // getAggregatedProjects();
+        Map<String, MavenProject> reactorKeys = new HashMap<>( aggregatedProjects.size() );
+        for ( MavenProject reactorProject : aggregatedProjects )
         {
+            reactorKeys.put( ArtifactUtils.versionlessKey( reactorProject.getGroupId(),
+                                                           reactorProject.getArtifactId() ), reactorProject );
+        }
+
+        Map<String, JavaModuleDescriptor> allModuleDescriptors = new HashMap<>();
+
+        boolean supportModulePath = javadocRuntimeVersion.isAtLeast( "9" );
+        if ( release != null )
+        {
+            supportModulePath &= JavaVersion.parse( release ).isAtLeast( "9" );
+        }
+        else if ( source != null )
+        {
+            supportModulePath &= JavaVersion.parse( source ).isAtLeast( "9" );
+        }
+
+        if ( supportModulePath )
+        {
+            for ( JavadocModule entry : allSourcePaths )
+            {
+                if ( entry.getModuleNameSource() == null || entry.getModuleNameSource() == ModuleNameSource.FILENAME )
+                {
+                    Path moduleDescriptor = findMainDescriptor( entry.getSourcePaths() );
+
+                    if ( moduleDescriptor != null )
+                    {
+                        try
+                        {
+                            allModuleDescriptors.put( entry.getGa(),
+                                      locationManager.parseModuleDescriptor( moduleDescriptor ).getModuleDescriptor() );
+                        }
+                        catch ( IOException e )
+                        {
+                            throw new MavenReportException( e.getMessage(), e );
+                        }
+                    }
+                }
+                else
+                {
+                    allModuleDescriptors.put( entry.getGa(), entry.getModuleDescriptor() );
+                }
+            }
+        }
+
+        Collection<String> additionalModules = new ArrayList<>();
+
+        ResolvePathResult mainResolvePathResult = null;
+
+        Map<String, Collection<Path>> patchModules = new HashMap<>();
+
+        Path moduleSourceDir = null;
+        if ( supportModulePath && !allModuleDescriptors.isEmpty() )
+        {
+            Collection<String> unnamedProjects = new ArrayList<>();
+            for ( JavadocModule javadocModule : allSourcePaths )
+            {
+                MavenProject aggregatedProject = reactorKeys.get( javadocModule.getGa() );
+                if ( aggregatedProject != null && !"pom".equals( aggregatedProject.getPackaging() ) )
+                {
+                    ResolvePathResult result = null;
+
+                    // Prefer jar over outputDirectory, since it may may contain an automatic module name
+                    File artifactFile = getClassesFile( aggregatedProject );
+                    if ( artifactFile != null )
+                    {
+                        ResolvePathRequest<File> request = ResolvePathRequest.ofFile( artifactFile );
+                        try
+                        {
+                            result = locationManager.resolvePath( request );
+                        }
+                        catch ( RuntimeException e )
+                        {
+                            // most likely an invalid module name based on filename
+                            if ( !"java.lang.module.FindException".equals( e.getClass().getName() ) )
+                            {
+                                throw e;
+                            }
+                        }
+                        catch ( IOException e )
+                        {
+                            throw new MavenReportException( e.getMessage(), e );
+                        }
+                    }
+                    else
+                    {
+                        Path moduleDescriptor = findMainDescriptor( javadocModule.getSourcePaths() );
+
+                        if ( moduleDescriptor != null )
+                        {
+                            try
+                            {
+                                result = locationManager.parseModuleDescriptor( moduleDescriptor );
+                            }
+                            catch ( IOException e )
+                            {
+                                throw new MavenReportException( e.getMessage(), e );
+                            }
+                        }
+                    }
+
+                    if ( result != null && result.getModuleDescriptor() != null )
+                    {
+                        moduleSourceDir = javadocOutputDirectory.toPath().resolve( "src" );
+                        try
+                        {
+                            moduleSourceDir = Files.createDirectories( moduleSourceDir );
+
+                            additionalModules.add( result.getModuleDescriptor().name() );
+
+                            patchModules.put( result.getModuleDescriptor().name(), javadocModule.getSourcePaths() );
+
+                            Path modulePath = moduleSourceDir.resolve( result.getModuleDescriptor().name() );
+                            if ( !Files.isDirectory( modulePath ) )
+                            {
+                                Files.createDirectory( modulePath );
+                            }
+                        }
+                        catch ( IOException e )
+                        {
+                            throw new MavenReportException( e.getMessage(), e );
+                        }
+                    }
+                    else
+                    {
+                        unnamedProjects.add( javadocModule.getGa() );
+                    }
+
+                    if ( aggregatedProject.equals( getProject() ) )
+                    {
+                        mainResolvePathResult = result;
+                    }
+                }
+                else
+                {
+                    // todo
+                    getLog().error( "no reactor project: " + javadocModule.getGa() );
+                }
+            }
+
+            if ( !unnamedProjects.isEmpty() )
+            {
+                getLog().error( "Creating an aggregated report for both named and unnamed modules is not possible." );
+                getLog().error( "Ensure that every module has a module descriptor or is a jar with a MANIFEST.MF "
+                    + "containing an Automatic-Module-Name." );
+                getLog().error( "Fix the following projects:" );
+                for ( String unnamedProject : unnamedProjects )
+                {
+                    getLog().error( " - " + unnamedProject );
+                }
+                throw new MavenReportException( "Aggregator report contains named and unnamed modules" );
+            }
+
+            if ( mainResolvePathResult != null
+                && ModuleNameSource.MANIFEST.equals( mainResolvePathResult.getModuleNameSource() ) )
+            {
+                arguments.add( "--add-modules" );
+                arguments.add( "ALL-MODULE-PATH" );
+            }
+        }
+
+        // MJAVADOC-506
+        boolean moduleDescriptorSource = false;
+        for ( Path sourcepath : sourcePaths )
+        {
+            if ( Files.isRegularFile( sourcepath.resolve( "module-info.java" ) ) )
+            {
+                moduleDescriptorSource = true;
+                break;
+            }
+        }
+
+        final ModuleNameSource mainModuleNameSource;
+        if ( mainResolvePathResult != null )
+        {
+            mainModuleNameSource = mainResolvePathResult.getModuleNameSource();
+        }
+        else
+        {
+            mainModuleNameSource = null;
+        }
+
+        if ( supportModulePath
+             && ( isAggregator()
+                  || ModuleNameSource.MODULEDESCRIPTOR.equals( mainModuleNameSource )
+                  || ModuleNameSource.MANIFEST.equals( mainModuleNameSource ) ) )
+        {
+            List<File> pathElements = new ArrayList<>( getPathElements() );
+            File artifactFile = getClassesFile( project );
+            if ( artifactFile != null )
+            {
+                pathElements.add( 0, artifactFile );
+            }
+
             ResolvePathsRequest<File> request =
-                ResolvePathsRequest.withFiles( getPathElements() ).setMainModuleDescriptor( mainDescriptor );
+                ResolvePathsRequest.ofFiles( pathElements );
+
+            String mainModuleName = null;
+            if ( mainResolvePathResult != null )
+            {
+                request.setModuleDescriptor( mainResolvePathResult.getModuleDescriptor() );
+                mainModuleName = mainResolvePathResult.getModuleDescriptor().name();
+            }
+
+            request.setAdditionalModules( additionalModules );
+            request.setIncludeStatic( isAggregator() );
+
             try
             {
                 ResolvePathsResult<File> result = locationManager.resolvePaths( request );
 
-                String classpath = StringUtils.join( result.getClasspathElements().iterator(), File.pathSeparator );
-                addArgIfNotEmpty( arguments, "--class-path", JavadocUtil.quotedPathArgument( classpath ) );
-
                 Set<File> modulePathElements = new HashSet<>( result.getModulepathElements().keySet() )  ;
-                if ( allSourcePaths.size() > 1 )
+
+                Collection<File> classPathElements = new ArrayList<>( result.getClasspathElements().size() );
+
+                for ( File file : result.getClasspathElements() )
                 {
-                    // Probably required due to bug in javadoc (Java 9+)   
-                    modulePathElements.addAll( getProjectBuildOutputDirs( getProject() ) );
+                    if ( file.isDirectory() && new File( file, "module-info.class" ).exists() )
+                    {
+                        modulePathElements.add( file );
+                    }
+                    else if ( ModuleNameSource.MANIFEST.equals( mainModuleNameSource ) )
+                    {
+                        ModuleNameSource depModuleNameSource =
+                            locationManager.resolvePath( ResolvePathRequest.ofFile( file ) ).getModuleNameSource();
+                        if ( ModuleNameSource.MODULEDESCRIPTOR.equals( depModuleNameSource )
+                            || ModuleNameSource.MANIFEST.equals( depModuleNameSource ) )
+                        {
+                            modulePathElements.add( file );
+                        }
+                        else
+                        {
+                            patchModules.get( mainModuleName ).add( file.toPath() );
+                        }
+                    }
+                    else
+                    {
+                        classPathElements.add( file );
+                    }
                 }
-                
+
+                /* MJAVADOC-620: also add all JARs where module-name-guessing leads to a FindException: */
+                for ( Entry<File, Exception> pathExceptionEntry : result.getPathExceptions().entrySet() )
+                {
+                    Exception exception = pathExceptionEntry.getValue();
+                    // For Java < 9 compatibility, reference FindException by name:
+                    if ( "java.lang.module.FindException".equals( exception.getClass().getName() ) )
+                    {
+                        File jarPath = pathExceptionEntry.getKey();
+                        classPathElements.add( jarPath );
+                    }
+                }
+
+                String classpath = StringUtils.join( classPathElements.iterator(), File.pathSeparator );
+                addArgIfNotEmpty( arguments, "--class-path", JavadocUtil.quotedPathArgument( classpath ), false,
+                                  false );
+
                 String modulepath =
                     StringUtils.join( modulePathElements.iterator(), File.pathSeparator );
-                addArgIfNotEmpty( arguments, "--module-path", JavadocUtil.quotedPathArgument( modulepath ) );
+                addArgIfNotEmpty( arguments, "--module-path", JavadocUtil.quotedPathArgument( modulepath ), false,
+                                  false );
             }
             catch ( IOException e )
             {
                 throw new MavenReportException( e.getMessage(), e );
             }
         }
+        else if ( supportModulePath && moduleDescriptorSource && !isTest() )
+        {
+            String modulepath = StringUtils.join( getPathElements().iterator(), File.pathSeparator );
+            addArgIfNotEmpty( arguments, "--module-path", JavadocUtil.quotedPathArgument( modulepath ) , false, false );
+        }
         else
         {
             String classpath = StringUtils.join( getPathElements().iterator(), File.pathSeparator );
-            addArgIfNotEmpty( arguments, "-classpath", JavadocUtil.quotedPathArgument( classpath ) );
+            addArgIfNotEmpty( arguments, "-classpath", JavadocUtil.quotedPathArgument( classpath ) , false, false );
         }
 
-        Collection<String> reactorKeys = new HashSet<>( session.getProjects().size() );
-        for ( MavenProject reactorProject : session.getProjects() )
+        for ( Entry<String, Collection<Path>> entry : patchModules.entrySet() )
         {
-            reactorKeys.add( ArtifactUtils.versionlessKey( reactorProject.getGroupId(),
-                                                           reactorProject.getArtifactId() ) );
+            addArgIfNotEmpty( arguments, "--patch-module", entry.getKey() + '='
+                              + JavadocUtil.quotedPathArgument( getSourcePath( entry.getValue() ) ),
+                                false, false );
         }
-        
-        Path moduleSourceDir = null;
-        if ( allSourcePaths.size() > 1 )
-        {
-            for ( Map.Entry<String, Collection<String>> projectSourcepaths : allSourcePaths.entrySet() )
-            {
-                if ( reactorKeys.contains( projectSourcepaths.getKey() ) )
-                {
-                    File moduleDescriptor = findMainDescriptor( projectSourcepaths.getValue() );
-                    if ( moduleDescriptor != null )
-                    {
-                        moduleSourceDir = javadocOutputDirectory.toPath().resolve( "src" );
-                        try
-                        {
-                            moduleSourceDir = Files.createDirectories( moduleSourceDir );
-                            ResolvePathsRequest<File> request =
-                                ResolvePathsRequest.withFiles( Collections.<File>emptyList() )
-                                                   .setMainModuleDescriptor( moduleDescriptor );
-                            
-                            String moduleName =
-                                locationManager.resolvePaths( request ).getMainModuleDescriptor().name();
-                            
-                            addArgIfNotEmpty( arguments, "--patch-module", moduleName + '='
-                                + JavadocUtil.quotedPathArgument( getSourcePath( projectSourcepaths.getValue() ) ) );
-                            
-                            Files.createDirectory( moduleSourceDir.resolve( moduleName ) );
-                        }
-                        catch ( IOException e )
-                        {
-                            throw new MavenReportException( e.getMessage() );
-                        }
-                    }
-                    else
-                    {
-                        // todo
-                        getLog().error( "no module descriptor for " + projectSourcepaths.getKey() );
-                    }
-                }
-                else
-                {
-                    // todo
-                    getLog().error( "no reactor project: " + projectSourcepaths.getKey() );
 
-                }
-            }
-        }
-        
         if ( StringUtils.isNotEmpty( doclet ) )
         {
             addArgIfNotEmpty( arguments, "-doclet", JavadocUtil.quotedArgument( doclet ) );
@@ -4803,22 +5466,31 @@ public abstract class AbstractJavadocMojo
             addArgIf( arguments, quiet, "-quiet", SINCE_JAVADOC_1_5 );
         }
 
-        addArgIfNotEmpty( arguments, "-source", JavadocUtil.quotedArgument( source ), SINCE_JAVADOC_1_4 );
+        if ( release != null )
+        {
+            arguments.add( "--release" );
+            arguments.add( release );
+        }
+        else
+        {
+            addArgIfNotEmpty( arguments, "-source", JavadocUtil.quotedArgument( source ), SINCE_JAVADOC_1_4 );
+        }
 
         if ( ( StringUtils.isEmpty( sourcepath ) ) && ( StringUtils.isNotEmpty( subpackages ) ) )
         {
             sourcepath = StringUtils.join( sourcePaths.iterator(), File.pathSeparator );
         }
-        
-        if ( moduleSourceDir != null )
+
+        if ( moduleSourceDir == null )
+        {
+            addArgIfNotEmpty( arguments, "-sourcepath",
+                              JavadocUtil.quotedPathArgument( getSourcePath( sourcePaths ) ), false, false );
+        }
+        else if ( mainResolvePathResult == null
+            || ModuleNameSource.MODULEDESCRIPTOR.equals( mainResolvePathResult.getModuleNameSource() ) )
         {
             addArgIfNotEmpty( arguments, "--module-source-path",
                               JavadocUtil.quotedPathArgument( moduleSourceDir.toString() ) );
-        }
-        else
-        {
-            addArgIfNotEmpty( arguments, "-sourcepath",
-                              JavadocUtil.quotedPathArgument( getSourcePath( sourcePaths ) ) );
         }
 
 
@@ -4826,7 +5498,7 @@ public abstract class AbstractJavadocMojo
         {
             addArgIfNotEmpty( arguments, "-subpackages", subpackages, SINCE_JAVADOC_1_5 );
         }
-        
+
         // [MJAVADOC-497] must be after sourcepath is recalculated, since getExcludedPackages() depends on it
         addArgIfNotEmpty( arguments, "-exclude", getExcludedPackages( sourcePaths ), SINCE_JAVADOC_1_4 );
 
@@ -4834,21 +5506,55 @@ public abstract class AbstractJavadocMojo
 
         if ( additionalOptions != null && additionalOptions.length > 0 )
         {
-            for ( String option : additionalOptions )
+            for ( String additionalOption : additionalOptions )
             {
-                arguments.add( option );
+                arguments.add( additionalOption.replaceAll( "(?<!\\\\)\\\\(?!\\\\|:)", "\\\\" ) );
             }
         }
     }
 
-    private File findMainDescriptor( Collection<String> roots )
+    private ResolvePathResult getResolvePathResult( File artifactFile )
     {
-        for ( String root : roots )
+        if ( artifactFile == null )
         {
-            File descriptorFile = new File( root, "module-info.java" ).getAbsoluteFile();
-            if ( descriptorFile.exists() )
+            return null;
+        }
+
+        ResolvePathResult resolvePathResult = null;
+        ResolvePathRequest<File> resolvePathRequest = ResolvePathRequest.ofFile( artifactFile );
+        try
+        {
+            resolvePathResult = locationManager.resolvePath( resolvePathRequest );
+
+            // happens when artifactFile is a directory without module descriptor
+            if ( resolvePathResult.getModuleDescriptor() == null )
             {
-                return descriptorFile;
+                return null;
+            }
+        }
+        catch ( IOException | RuntimeException /* e.g java.lang.module.FindException */ e )
+        {
+            if ( getLog().isDebugEnabled() )
+            {
+                Throwable cause = e;
+                while ( cause.getCause() != null )
+                {
+                    cause = cause.getCause();
+                }
+
+                getLog().debug( "resolve path for: " + artifactFile + " cause error: " + cause );
+            }
+        }
+        return resolvePathResult;
+    }
+
+    private Path findMainDescriptor( Collection<Path> roots ) throws MavenReportException
+    {
+        for ( Map.Entry<Path, Collection<String>> entry : getFiles( roots ).entrySet() )
+        {
+            if ( entry.getValue().contains( "module-info.java" ) )
+            {
+                return entry.getKey().resolve( "module-info.java" );
             }
         }
         return null;
@@ -4863,10 +5569,12 @@ public abstract class AbstractJavadocMojo
      * @param javadocOutputDirectory not null
      * @param arguments              not null
      * @throws MavenReportException if any
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#standard">
-     *      http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#standard</a>
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#standard">
+     *      https://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#standard</a>
      */
-    private void addStandardDocletOptions( File javadocOutputDirectory, List<String> arguments )
+    private void addStandardDocletOptions( File javadocOutputDirectory,
+                                           List<String> arguments,
+                                           Set<OfflineLink> offlineLinks )
         throws MavenReportException
     {
         validateStandardDocletOptions();
@@ -4906,17 +5614,18 @@ public abstract class AbstractJavadocMojo
 
         addArgIfNotEmpty( arguments, "-header", JavadocUtil.quotedArgument( header ), false, false );
 
-        addArgIfNotEmpty( arguments, "-helpfile",
-                          JavadocUtil.quotedPathArgument( getHelpFile( javadocOutputDirectory ) ) );
+        Optional<File> helpFile = getHelpFile( javadocOutputDirectory );
+        if ( helpFile.isPresent() )
+        {
+            addArgIfNotEmpty( arguments, "-helpfile",
+                              JavadocUtil.quotedPathArgument( helpFile.get().getAbsolutePath() ) );
+        }
 
         addArgIf( arguments, keywords, "-keywords", SINCE_JAVADOC_1_4_2 );
 
-        if ( !isOffline )
-        {
-            addLinkArguments( arguments );
-        }
+        addLinkArguments( arguments );
 
-        addLinkofflineArguments( arguments );
+        addLinkofflineArguments( arguments, offlineLinks );
 
         addArgIf( arguments, linksource, "-linksource", SINCE_JAVADOC_1_4 );
 
@@ -4947,6 +5656,12 @@ public abstract class AbstractJavadocMojo
 
         addArgIf( arguments, nosince, "-nosince" );
 
+        if ( !notimestamp && MavenArchiver.parseBuildOutputTimestamp( outputTimestamp ).isPresent() )
+        {
+            // Override the notimestamp option if a Reproducible Build is requested.
+            notimestamp = true;
+        }
+
         addArgIf( arguments, notimestamp, "-notimestamp", SINCE_JAVADOC_1_5 );
 
         addArgIf( arguments, notree, "-notree" );
@@ -4963,8 +5678,15 @@ public abstract class AbstractJavadocMojo
 
         addArgIf( arguments, splitindex, "-splitindex" );
 
-        addArgIfNotEmpty( arguments, "-stylesheetfile",
-                          JavadocUtil.quotedPathArgument( getStylesheetFile( javadocOutputDirectory ) ) );
+        Optional<File> stylesheetfile = getStylesheetFile( javadocOutputDirectory );
+
+        if ( stylesheetfile.isPresent() )
+        {
+            addArgIfNotEmpty( arguments, "-stylesheetfile",
+                              JavadocUtil.quotedPathArgument( stylesheetfile.get().getAbsolutePath() ) );
+        }
+
+        addAddStyleSheets( arguments );
 
         if ( StringUtils.isNotEmpty( sourcepath ) && !isJavaDocVersionAtLeast( SINCE_JAVADOC_1_5 ) )
         {
@@ -5032,14 +5754,17 @@ public abstract class AbstractJavadocMojo
     private void addTags( List<String> arguments )
         throws MavenReportException
     {
-        Set<Tag> tags = collectTags();
-
-        if ( isEmpty( tags ) )
+        final String lineSeparator;
+        if ( javadocRuntimeVersion.isBefore( "9" ) )
         {
-            return;
+            lineSeparator = " ";
+        }
+        else
+        {
+            lineSeparator = " \\\\" + SystemUtils.LINE_SEPARATOR;
         }
 
-        for ( Tag tag : tags )
+        for ( Tag tag : collectTags() )
         {
             if ( StringUtils.isEmpty( tag.getName() ) )
             {
@@ -5053,10 +5778,10 @@ public abstract class AbstractJavadocMojo
                 String value = "\"" + tag.getName();
                 if ( StringUtils.isNotEmpty( tag.getPlacement() ) )
                 {
-                    value += ":" + tag.getPlacement();
+                    value += ":" + tag.getPlacement().replaceAll( "\\R", lineSeparator );
                     if ( StringUtils.isNotEmpty( tag.getHead() ) )
                     {
-                        value += ":" + tag.getHead();
+                        value += ":" + tag.getHead().replaceAll( "\\R", lineSeparator );
                     }
                 }
                 value += "\"";
@@ -5234,6 +5959,77 @@ public abstract class AbstractJavadocMojo
      * @throws MavenReportException if any errors occur
      */
     private void executeJavadocCommandLine( Commandline cmd, File javadocOutputDirectory )
+            throws MavenReportException
+    {
+        if ( staleDataPath != null )
+        {
+            if ( !isUpToDate( cmd ) )
+            {
+                doExecuteJavadocCommandLine( cmd, javadocOutputDirectory );
+                StaleHelper.writeStaleData( cmd, staleDataPath.toPath() );
+            }
+        }
+        else
+        {
+            doExecuteJavadocCommandLine( cmd, javadocOutputDirectory );
+        }
+    }
+
+    /**
+     * Check if the javadoc is uptodate or not
+     *
+     * @param cmd                    not null
+     * @return <code>true</code> is the javadoc is uptodate, <code>false</code> otherwise
+     * @throws MavenReportException  if any error occur
+     */
+    private boolean isUpToDate( Commandline cmd )
+            throws MavenReportException
+    {
+        try
+        {
+            String curdata = StaleHelper.getStaleData( cmd );
+            Path cacheData = staleDataPath.toPath();
+            String prvdata;
+            if ( Files.isRegularFile( cacheData ) )
+            {
+                prvdata = new String( Files.readAllBytes( cacheData ), StandardCharsets.UTF_8 );
+            }
+            else
+            {
+                prvdata = null;
+            }
+            if ( curdata.equals( prvdata ) )
+            {
+                getLog().info( "Skipping javadoc generation, everything is up to date." );
+                return true;
+            }
+            else
+            {
+                if ( prvdata == null )
+                {
+                    getLog().info( "No previous run data found, generating javadoc." );
+                }
+                else
+                {
+                    getLog().info( "Configuration changed, re-generating javadoc." );
+                }
+            }
+        }
+        catch ( IOException e )
+        {
+            throw new MavenReportException( "Error checking uptodate status", e );
+        }
+        return false;
+    }
+
+    /**
+     * Execute the Javadoc command line
+     *
+     * @param cmd                    not null
+     * @param javadocOutputDirectory not null
+     * @throws MavenReportException if any errors occur
+     */
+    private void doExecuteJavadocCommandLine( Commandline cmd, File javadocOutputDirectory )
         throws MavenReportException
     {
         if ( getLog().isDebugEnabled() )
@@ -5246,13 +6042,12 @@ public abstract class AbstractJavadocMojo
         if ( debug )
         {
             cmdLine = CommandLineUtils.toString( cmd.getCommandline() ).replaceAll( "'", "" );
-            cmdLine = JavadocUtil.hideProxyPassword( cmdLine, settings );
 
             writeDebugJavadocScript( cmdLine, javadocOutputDirectory );
         }
 
-        CommandLineUtils.StringStreamConsumer err = new CommandLineUtils.StringStreamConsumer();
-        CommandLineUtils.StringStreamConsumer out = new CommandLineUtils.StringStreamConsumer();
+        CommandLineUtils.StringStreamConsumer err = new JavadocUtil.JavadocOutputStreamConsumer();
+        CommandLineUtils.StringStreamConsumer out = new JavadocUtil.JavadocOutputStreamConsumer();
         try
         {
             int exitCode = CommandLineUtils.executeCommandLine( cmd, out, err );
@@ -5264,7 +6059,6 @@ public abstract class AbstractJavadocMojo
                 if ( cmdLine == null )
                 {
                     cmdLine = CommandLineUtils.toString( cmd.getCommandline() ).replaceAll( "'", "" );
-                    cmdLine = JavadocUtil.hideProxyPassword( cmdLine, settings );
                 }
                 writeDebugJavadocScript( cmdLine, javadocOutputDirectory );
 
@@ -5312,22 +6106,41 @@ public abstract class AbstractJavadocMojo
         // Handle Javadoc warnings
         // ----------------------------------------------------------------------
 
-        if ( StringUtils.isNotEmpty( err.getOutput() ) && getLog().isWarnEnabled() )
+        if ( containsWarnings( err.getOutput() ) )
         {
-            getLog().warn( "Javadoc Warnings" );
-
-            StringTokenizer token = new StringTokenizer( err.getOutput(), "\n" );
-            while ( token.hasMoreTokens() )
+            if ( getLog().isWarnEnabled() )
             {
-                String current = token.nextToken().trim();
+                getLog().warn( "Javadoc Warnings" );
 
-                getLog().warn( current );
+                StringTokenizer token = new StringTokenizer( err.getOutput(), "\n" );
+                while ( token.hasMoreTokens() )
+                {
+                    String current = token.nextToken().trim();
+
+                    getLog().warn( current );
+                }
+            }
+
+            if ( failOnWarnings )
+            {
+                throw new MavenReportException( "Project contains Javadoc Warnings" );
             }
         }
+    }
 
-        if ( StringUtils.isNotEmpty( err.getOutput() ) && failOnWarnings )
+    private boolean containsWarnings( String output )
+    {
+        // JDK-8268774 / JDK-8270831
+        if ( this.javadocRuntimeVersion.isBefore( "17" ) )
         {
-            throw new MavenReportException( "Project contains Javadoc Warnings" );
+            return StringUtils.isNotEmpty( output );
+        }
+        else
+        {
+            return Arrays.stream( output.split( "\\R" ) )
+                            .reduce( ( first, second ) -> second ) // last line
+                            .filter( line -> line.matches( "\\d+ warnings?" ) )
+                            .isPresent();
         }
     }
 
@@ -5344,21 +6157,15 @@ public abstract class AbstractJavadocMojo
         throws IOException
     {
         final String fixData;
-        InputStream in = null;
-        try
+
+        try ( InputStream in = this.getClass().getResourceAsStream( "frame-injection-fix.txt" ) )
         {
-            in = this.getClass().getResourceAsStream( "frame-injection-fix.txt" );
             if ( in == null )
             {
                 throw new FileNotFoundException( "Missing resource 'frame-injection-fix.txt' in classpath." );
             }
-            fixData = StringUtils.unifyLineSeparators( IOUtil.toString( in, "US-ASCII" ) ).trim();
-            in.close();
-            in = null;
-        }
-        finally
-        {
-            IOUtil.close( in );
+            fixData = org.codehaus.plexus.util.StringUtils
+                .unifyLineSeparators( IOUtil.toString( in, "US-ASCII" ) ).trim();
         }
 
         final DirectoryScanner ds = new DirectoryScanner();
@@ -5397,7 +6204,7 @@ public abstract class AbstractJavadocMojo
      * @return the resource file absolute path as String
      * @since 2.6
      */
-    private String getResource( File outputFile, String inputResourceName )
+    private Optional<File> getResource( File outputFile, String inputResourceName )
     {
         if ( inputResourceName.startsWith( "/" ) )
         {
@@ -5411,7 +6218,7 @@ public abstract class AbstractJavadocMojo
         if ( resourceURL != null )
         {
             getLog().debug( inputResourceName + " found in the main src directory of the project." );
-            return FileUtils.toFile( resourceURL ).getAbsolutePath();
+            return Optional.of( FileUtils.toFile( resourceURL ) );
         }
 
         classPath.clear();
@@ -5424,7 +6231,7 @@ public abstract class AbstractJavadocMojo
         if ( resourceURL != null )
         {
             getLog().debug( inputResourceName + " found in the main resources directories of the project." );
-            return FileUtils.toFile( resourceURL ).getAbsolutePath();
+            return Optional.of( FileUtils.toFile( resourceURL ) );
         }
 
         if ( javadocDirectory.exists() )
@@ -5435,7 +6242,7 @@ public abstract class AbstractJavadocMojo
             if ( resourceURL != null )
             {
                 getLog().debug( inputResourceName + " found in the main javadoc directory of the project." );
-                return FileUtils.toFile( resourceURL ).getAbsolutePath();
+                return Optional.of( FileUtils.toFile( resourceURL ) );
             }
         }
 
@@ -5447,14 +6254,15 @@ public abstract class AbstractJavadocMojo
             List<Dependency> dependencies = javadocPlugin.getDependencies();
             for ( Dependency dependency : dependencies )
             {
-                JavadocPathArtifact javadocPathArtifact = new JavadocPathArtifact();
-                javadocPathArtifact.setGroupId( dependency.getGroupId() );
-                javadocPathArtifact.setArtifactId( dependency.getArtifactId() );
-                javadocPathArtifact.setVersion( dependency.getVersion() );
+                ResourcesArtifact resourceArtifact = new ResourcesArtifact();
+                resourceArtifact.setGroupId( dependency.getGroupId() );
+                resourceArtifact.setArtifactId( dependency.getArtifactId() );
+                resourceArtifact.setVersion( dependency.getVersion() );
+                resourceArtifact.setClassifier( dependency.getClassifier() );
                 Artifact artifact = null;
                 try
                 {
-                    artifact = createAndResolveArtifact( javadocPathArtifact );
+                    artifact = createAndResolveArtifact( resourceArtifact );
                 }
                 catch ( Exception e )
                 {
@@ -5474,7 +6282,7 @@ public abstract class AbstractJavadocMojo
                 {
                     JavadocUtil.copyResource( resourceURL, outputFile );
 
-                    return outputFile.getAbsolutePath();
+                    return Optional.of( outputFile );
                 }
                 catch ( IOException e )
                 {
@@ -5485,12 +6293,12 @@ public abstract class AbstractJavadocMojo
 
         getLog().warn( "Unable to find the resource '" + inputResourceName + "'. Using default Javadoc resources." );
 
-        return null;
+        return Optional.empty();
     }
 
     /**
-     * @param classPath a not null String list of files where resource will be look up.
-     * @param resource  a not null ressource to find in the class path.
+     * @param classPath a not null String list of files where resource will be looked up
+     * @param resource a not null resource to find in the class path
      * @return the resource from the given classpath or null if not found
      * @see ClassLoader#getResource(String)
      * @since 2.6
@@ -5502,7 +6310,7 @@ public abstract class AbstractJavadocMojo
         {
             try
             {
-                urls.add( new File( filename ).toURL() );
+                urls.add( new File( filename ).toURI().toURL() );
             }
             catch ( MalformedURLException e )
             {
@@ -5510,9 +6318,22 @@ public abstract class AbstractJavadocMojo
             }
         }
 
-        ClassLoader javadocClassLoader = new URLClassLoader( urls.toArray( new URL[urls.size()] ), null );
-
-        return javadocClassLoader.getResource( resource );
+        URLClassLoader javadocClassLoader = new URLClassLoader( urls.toArray( new URL[urls.size()] ), null );
+        try
+        {
+            return javadocClassLoader.getResource( resource );
+        }
+        finally
+        {
+            try
+            {
+                javadocClassLoader.close();
+            }
+            catch ( IOException ex )
+            {
+                // ignore
+            }
+        }
     }
 
     /**
@@ -5523,18 +6344,14 @@ public abstract class AbstractJavadocMojo
     private String getFullJavadocGoal()
     {
         String javadocPluginVersion = null;
-        InputStream resourceAsStream = null;
-        try
+        String resource = "META-INF/maven/org.apache.maven.plugins/maven-javadoc-plugin/pom.properties";
+        try ( InputStream resourceAsStream
+                        = AbstractJavadocMojo.class.getClassLoader().getResourceAsStream( resource ) )
         {
-            String resource = "META-INF/maven/org.apache.maven.plugins/maven-javadoc-plugin/pom.properties";
-            resourceAsStream = AbstractJavadocMojo.class.getClassLoader().getResourceAsStream( resource );
-
             if ( resourceAsStream != null )
             {
                 Properties properties = new Properties();
                 properties.load( resourceAsStream );
-                resourceAsStream.close();
-                resourceAsStream = null;
                 if ( StringUtils.isNotEmpty( properties.getProperty( "version" ) ) )
                 {
                     javadocPluginVersion = properties.getProperty( "version" );
@@ -5544,10 +6361,6 @@ public abstract class AbstractJavadocMojo
         catch ( IOException e )
         {
             // nop
-        }
-        finally
-        {
-            IOUtil.close( resourceAsStream );
         }
 
         StringBuilder sb = new StringBuilder();
@@ -5574,7 +6387,7 @@ public abstract class AbstractJavadocMojo
      * Using Maven, a Javadoc link is given by <code>${project.url}/apidocs</code>.
      *
      * @return the detected Javadoc links using the Maven conventions for all modules defined in the current project
-     *         or an empty list.
+     *         or an empty list
      * @throws MavenReportException if any
      * @see #detectOfflineLinks
      * @see #reactorProjects
@@ -5583,7 +6396,8 @@ public abstract class AbstractJavadocMojo
     private List<OfflineLink> getModulesLinks()
         throws MavenReportException
     {
-        if ( !detectOfflineLinks || isAggregator() || reactorProjects == null )
+        List<MavenProject> aggregatedProjects = reactorProjects;
+        if ( !detectOfflineLinks || isAggregator() || aggregatedProjects.isEmpty() )
         {
             return Collections.emptyList();
         }
@@ -5599,7 +6413,7 @@ public abstract class AbstractJavadocMojo
 
         List<OfflineLink> modulesLinks = new ArrayList<>();
         String javadocDirRelative = PathUtils.toRelative( project.getBasedir(), getOutputDirectory() );
-        for ( MavenProject p : reactorProjects )
+        for ( MavenProject p : aggregatedProjects )
         {
             if ( !dependencyArtifactIds.contains( p.getArtifact().getId() ) || ( p.getUrl() == null ) )
             {
@@ -5626,7 +6440,8 @@ public abstract class AbstractJavadocMojo
                 try
                 {
                     JavadocUtil.invokeMaven( getLog(), new File( localRepository.getBasedir() ), p.getFile(),
-                                             Collections.singletonList( javadocGoal ), null, invokerLogFile );
+                                             Collections.singletonList( javadocGoal ), null, invokerLogFile,
+                                             session.getRequest().getGlobalSettingsFile() );
                 }
                 catch ( MavenInvocationException e )
                 {
@@ -5679,7 +6494,7 @@ public abstract class AbstractJavadocMojo
      * @return the detected Javadoc links using the Maven conventions for all dependencies defined in the current
      *         project or an empty list.
      * @see #detectLinks
-     * @see #isValidJavadocLink(String)
+     * @see #isValidJavadocLink(String, boolean)
      * @since 2.6
      */
     private List<String> getDependenciesLinks()
@@ -5701,91 +6516,146 @@ public abstract class AbstractJavadocMojo
                 continue;
             }
 
-            try
+            Optional<DependencyLink> depLink =
+                this.dependencyLinks.stream().filter( d -> matches( d, artifact ) ).findAny();
+
+            final String url;
+            final boolean detected;
+            if ( depLink.isPresent() )
             {
-                MavenProject artifactProject =
-                    mavenProjectBuilder.build( artifact, session.getProjectBuildingRequest() ).getProject();
-
-                if ( StringUtils.isNotEmpty( artifactProject.getUrl() ) )
+                url = depLink.get().getUrl();
+                detected = false;
+            }
+            else
+            {
+                try
                 {
-                    String url = getJavadocLink( artifactProject );
+                    MavenProject artifactProject =
+                        mavenProjectBuilder.build( artifact, getProjectBuildingRequest( project ) ).getProject();
 
-                    if ( isValidJavadocLink( url, true ) )
-                    {
-                        getLog().debug( "Added Javadoc link: " + url + " for " + artifactProject.getId() );
-
-                        dependenciesLinks.add( url );
-                    }
+                    url = getJavadocLink( artifactProject );
+                    detected = true;
+                }
+                catch ( ProjectBuildingException e )
+                {
+                    logError( "ProjectBuildingException for " + artifact.toString() + ": " + e.getMessage(), e );
+                    continue;
                 }
             }
-            catch ( ProjectBuildingException e )
+
+            if ( url != null && isValidJavadocLink( url, detected ) )
             {
-                logError( "ProjectBuildingException for " + artifact.toString() + ": " + e.getMessage(), e );
+                getLog().debug( "Added Javadoc link: " + url + " for " + artifact.getId() );
+
+                dependenciesLinks.add( url );
             }
         }
 
         return dependenciesLinks;
     }
 
+    private boolean matches( DependencyLink d, Artifact artifact )
+    {
+        if ( d.getGroupId() != null && !d.getGroupId().equals( artifact.getGroupId() ) )
+        {
+            return false;
+        }
+        if ( d.getArtifactId() != null && !d.getArtifactId().equals( artifact.getArtifactId() ) )
+        {
+            return false;
+        }
+        if ( d.getClassifier() != null && !d.getClassifier().equals( artifact.getClassifier() ) )
+        {
+            return false;
+        }
+        return true;
+    }
+
     /**
-     * @return if {@link #detectJavaApiLink}, the Java API link based on the {@link #javaApiLinks} properties and the
+     * @return if {@code detectJavaApiLink}, the Java API link based on the {@code javaApiLinks} properties and the
      *         value of the <code>source</code> parameter in the
      *         <code>org.apache.maven.plugins:maven-compiler-plugin</code>
      *         defined in <code>${project.build.plugins}</code> or in <code>${project.build.pluginManagement}</code>,
-     *         or the {@link #javadocRuntimeVersion}, or <code>null</code> if not defined.
-     * @see #detectJavaApiLink
-     * @see #javaApiLinks
-     * @see #DEFAULT_JAVA_API_LINKS
+     *         or the {@code javadocRuntimeVersion}, or <code>null</code> if not defined.
      * @see <a href="http://maven.apache.org/plugins/maven-compiler-plugin/compile-mojo.html#source">source parameter</a>
      * @since 2.6
      */
-    private OfflineLink getDefaultJavadocApiLink()
+    protected final OfflineLink getDefaultJavadocApiLink()
     {
         if ( !detectJavaApiLink )
         {
             return null;
         }
 
-        final String pluginId = "org.apache.maven.plugins:maven-compiler-plugin";
-        JavaVersion sourceVersion = javadocRuntimeVersion;
-        String sourceConfigured = getPluginParameter( project, pluginId, "source" );
-        if ( sourceConfigured != null )
+        final JavaVersion javaApiversion;
+        if ( release != null )
         {
-            try
-            {
-                sourceVersion = JavaVersion.parse( sourceConfigured );
-            }
-            catch ( NumberFormatException e )
-            {
-                getLog().debug(
-                    "NumberFormatException for the source parameter in the maven-compiler-plugin. " + "Ignored it", e );
-            }
+            javaApiversion = JavaVersion.parse( release );
+        }
+        else if ( source != null && !source.isEmpty() )
+        {
+            javaApiversion = JavaVersion.parse( source );
         }
         else
         {
-            getLog().debug( "No maven-compiler-plugin defined in ${build.plugins} or in "
-                                + "${project.build.pluginManagement} for the " + project.getId()
-                                + ". Added Javadoc API link according the javadoc executable version i.e.: "
-                                + javadocRuntimeVersion );
+            final String pluginId = "org.apache.maven.plugins:maven-compiler-plugin";
+            String sourceConfigured = getPluginParameter( project, pluginId, "source" );
+            if ( sourceConfigured != null )
+            {
+                javaApiversion = JavaVersion.parse( sourceConfigured );
+            }
+            else
+            {
+                getLog().debug( "No maven-compiler-plugin defined in ${build.plugins} or in "
+                                    + "${project.build.pluginManagement} for the " + project.getId()
+                                    + ". Added Javadoc API link according the javadoc executable version i.e.: "
+                                    + javadocRuntimeVersion );
+
+                javaApiversion = javadocRuntimeVersion;
+            }
         }
 
-        String apiVersion;
-        
-        Matcher apiMatcher = Pattern.compile( "(1\\.\\d|\\d\\d*)" ).matcher( sourceVersion.toString() );
-        if ( apiMatcher.find() )
+        final String javaApiKey;
+        if ( javaApiversion.asMajor().isAtLeast( "9" ) )
         {
-            apiVersion = apiMatcher.group( 1 );
+            javaApiKey = "api_" + javaApiversion.asMajor();
         }
         else
         {
-            apiVersion = null;
+            javaApiKey = "api_1." + javaApiversion.asMajor().toString().charAt( 0 );
         }
 
-        String javaApiLink = javaApiLinks.getProperty( "api_" + apiVersion, null );
+        final String javaApiLink;
+        if ( javaApiLinks != null && javaApiLinks.containsKey( javaApiKey ) )
+        {
+            javaApiLink = javaApiLinks.getProperty( javaApiKey );
+        }
+        else if ( javaApiversion.isAtLeast( "16" ) )
+        {
+            javaApiLink = null; // JDK-8216497
+        }
+        else if ( javaApiversion.isAtLeast( "11" ) )
+        {
+            javaApiLink =
+                String.format( "https://docs.oracle.com/en/java/javase/%s/docs/api/", javaApiversion.getValue( 1 ) );
+        }
+        else if ( javaApiversion.asMajor().isAtLeast( "6" ) )
+        {
+            javaApiLink =
+                String.format( "https://docs.oracle.com/javase/%s/docs/api/", javaApiversion.asMajor().getValue( 1 ) );
+        }
+        else if ( javaApiversion.isAtLeast( "1.5" ) )
+        {
+            javaApiLink = "https://docs.oracle.com/javase/1.5.0/docs/api/";
+        }
+        else
+        {
+            javaApiLink = null;
+        }
 
         if ( getLog().isDebugEnabled() )
         {
-            if ( StringUtils.isNotEmpty( javaApiLink ) )
+            if ( javaApiLink != null )
             {
                 getLog().debug( "Found Java API link: " + javaApiLink );
             }
@@ -5800,33 +6670,41 @@ public abstract class AbstractJavadocMojo
             return null;
         }
 
-        File javaApiPackageListFile = new File( getJavadocOptionsFile().getParentFile(), "package-list" );
+        final Path javaApiListFile;
+        final String resourceName;
+        if ( javaApiversion.isAtLeast( "10" ) )
+        {
+            javaApiListFile = getJavadocOptionsFile().getParentFile().toPath().resolve( "element-list" );
+            resourceName = "java-api-element-list-" + javaApiversion.toString().substring( 0, 2 );
+        }
+        else if ( javaApiversion.asMajor().isAtLeast( "9" ) )
+        {
+            javaApiListFile = getJavadocOptionsFile().getParentFile().toPath().resolve( "package-list" );
+            resourceName = "java-api-package-list-9";
+        }
+        else
+        {
+            javaApiListFile = getJavadocOptionsFile().getParentFile().toPath().resolve( "package-list" );
+            resourceName = "java-api-package-list-1." + javaApiversion.asMajor().toString().charAt( 0 );
+        }
 
         OfflineLink link = new OfflineLink();
-        link.setLocation( javaApiPackageListFile.getParentFile().getAbsolutePath() );
+        link.setLocation( javaApiListFile.getParent().toAbsolutePath().toString() );
         link.setUrl( javaApiLink );
 
-        InputStream in = null;
-        OutputStream out = null;
-        try
+        InputStream in = this.getClass().getResourceAsStream( resourceName );
+        if ( in != null )
         {
-            in = this.getClass().getResourceAsStream( "java-api-package-list-" + apiVersion );
-            out = new FileOutputStream( javaApiPackageListFile );
-            IOUtil.copy( in, out );
-            out.close();
-            out = null;
-            in.close();
-            in = null;
-        }
-        catch ( IOException ioe )
-        {
-            logError( "Can't get java-api-package-list-" + apiVersion + ": " + ioe.getMessage(), ioe );
-            return null;
-        }
-        finally
-        {
-            IOUtil.close( in );
-            IOUtil.close( out );
+            try ( InputStream closableIS = in )
+            {
+                // TODO only copy when changed
+                Files.copy( closableIS, javaApiListFile, StandardCopyOption.REPLACE_EXISTING );
+            }
+            catch ( IOException ioe )
+            {
+                logError( "Can't get " + resourceName + ": " + ioe.getMessage(), ioe );
+                return null;
+            }
         }
 
         return link;
@@ -5852,6 +6730,11 @@ public abstract class AbstractJavadocMojo
             {
                 // only print in debug, it should have been logged already in warn/error because link isn't valid
                 getLog().debug( "Could not follow " + link + ". Reason: " + e.getMessage() );
+
+                // Even when link produces error it should be kept in the set because the error might be caused by
+                // incomplete redirect configuration on the server side.
+                // This partially restores the previous behaviour before fix for MJAVADOC-427
+                redirectLinks.add( link );
             }
         }
         return redirectLinks;
@@ -5862,7 +6745,7 @@ public abstract class AbstractJavadocMojo
      * @param detecting <code>true</code> if the link is generated by
      * <code>detectLinks</code>, or <code>false</code> otherwise
      * @return <code>true</code> if the link has a <code>/package-list</code>, <code>false</code> otherwise.
-     * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/solaris/javadoc.html#package-list">
+     * @see <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/solaris/javadoc.html#package-list">
      *      package-list spec</a>
      * @since 2.6
      */
@@ -5870,12 +6753,15 @@ public abstract class AbstractJavadocMojo
     {
         try
         {
-            URI linkUri;
+            final URI packageListUri;
+            final URI elementListUri;
+
             if ( link.trim().toLowerCase( Locale.ENGLISH ).startsWith( "http:" ) || link.trim().toLowerCase(
                 Locale.ENGLISH ).startsWith( "https:" ) || link.trim().toLowerCase( Locale.ENGLISH ).startsWith(
                 "ftp:" ) || link.trim().toLowerCase( Locale.ENGLISH ).startsWith( "file:" ) )
             {
-                linkUri = new URI( link + "/package-list" );
+                packageListUri = new URI( link + '/' + PACKAGE_LIST );
+                elementListUri = new URI( link + '/' + ELEMENT_LIST );
             }
             else
             {
@@ -5896,27 +6782,42 @@ public abstract class AbstractJavadocMojo
                         getLog().error( "The given File link: " + dir + " is not a dir." );
                     }
                 }
-                linkUri = new File( dir, "package-list" ).toURI();
+                packageListUri = new File( dir, PACKAGE_LIST ).toURI();
+                elementListUri = new File( dir, ELEMENT_LIST ).toURI();
             }
 
-            if ( !JavadocUtil.isValidPackageList( linkUri.toURL(), settings, validateLinks ) )
+
+            try
             {
-                if ( getLog().isErrorEnabled() )
+                if ( JavadocUtil.isValidElementList( elementListUri.toURL(), settings, validateLinks ) )
                 {
-                    if ( detecting )
-                    {
-                        getLog().warn( "Invalid link: " + link + "/package-list. Ignored it." );
-                    }
-                    else
-                    {
-                        getLog().error( "Invalid link: " + link + "/package-list. Ignored it." );
-                    }
+                    return true;
                 }
-
-                return false;
+            }
+            catch ( IOException e )
+            {
             }
 
-            return true;
+            if ( JavadocUtil.isValidPackageList( packageListUri.toURL(), settings, validateLinks ) )
+            {
+                return true;
+            }
+
+            if ( getLog().isErrorEnabled() )
+            {
+                if ( detecting )
+                {
+                    getLog().warn( "Invalid links: "
+                                    + link + " with /" + PACKAGE_LIST + " or / " + ELEMENT_LIST + ". Ignored it." );
+                }
+                else
+                {
+                    getLog().error( "Invalid links: "
+                                    + link + " with /" + PACKAGE_LIST + " or / " + ELEMENT_LIST + ". Ignored it." );
+                }
+            }
+
+            return false;
         }
         catch ( URISyntaxException e )
         {
@@ -5924,11 +6825,11 @@ public abstract class AbstractJavadocMojo
             {
                 if ( detecting )
                 {
-                    getLog().warn( "Malformed link: " + link + "/package-list. Ignored it." );
+                    getLog().warn( "Malformed link: " + e.getInput() + ". Ignored it." );
                 }
                 else
                 {
-                    getLog().error( "Malformed link: " + link + "/package-list. Ignored it." );
+                    getLog().error( "Malformed link: " + e.getInput() + ". Ignored it." );
                 }
             }
             return false;
@@ -5939,11 +6840,11 @@ public abstract class AbstractJavadocMojo
             {
                 if ( detecting )
                 {
-                    getLog().warn( "Error fetching link: " + link + "/package-list. Ignored it." );
+                    getLog().warn( "Error fetching link: " + link + ". Ignored it." );
                 }
                 else
                 {
-                    getLog().error( "Error fetching link: " + link + "/package-list. Ignored it." );
+                    getLog().error( "Error fetching link: " + link + ". Ignored it." );
                 }
             }
             return false;
@@ -6148,7 +7049,7 @@ public abstract class AbstractJavadocMojo
         }
 
         File optionsFile = getJavadocOptionsFile();
-        
+
         try ( Writer writer = WriterFactory.newXmlWriter( optionsFile ) )
         {
             new JavadocOptionsXpp3Writer().write( writer, options );
@@ -6188,7 +7089,7 @@ public abstract class AbstractJavadocMojo
     /**
      * @param prefix The prefix of the exception.
      * @param e The exception.
-     * @throws MojoExecutionException {@link MojoExecutionException}
+     * @throws MojoExecutionException {@link MojoExecutionException} issue while generating report
      */
     protected void failOnError( String prefix, Exception e )
         throws MojoExecutionException
@@ -6204,4 +7105,72 @@ public abstract class AbstractJavadocMojo
 
         getLog().error( prefix + ": " + e.getMessage(), e );
     }
+
+
+    /**
+     *
+     * @return List of projects to be part of aggregated javadoc
+     */
+    private List<MavenProject> getAggregatedProjects()
+    {
+        if ( this.reactorProjects == null )
+        {
+           return Collections.emptyList();
+        }
+        Map<Path, MavenProject> reactorProjectsMap = new HashMap<>();
+        for ( MavenProject reactorProject : this.reactorProjects )
+        {
+            if ( !isSkippedJavadoc( reactorProject ) && //
+                    !isSkippedModule( reactorProject ) )
+            {
+                reactorProjectsMap.put( reactorProject.getBasedir().toPath(), reactorProject );
+            }
+        }
+
+        return new ArrayList<>( modulesForAggregatedProject( project, reactorProjectsMap ) );
+    }
+
+    /**
+     *
+     * @return <code>true</code> if the module need to be skipped from aggregate generation
+     */
+    protected boolean isSkippedModule( MavenProject mavenProject )
+    {
+        if ( StringUtils.isEmpty( this.skippedModules ) )
+        {
+            return false;
+        }
+        List<String> modulesToSkip = Arrays.asList( StringUtils.split( this.skippedModules, ',' ) );
+        return modulesToSkip.contains( mavenProject.getArtifactId() );
+    }
+
+    /**
+     *
+     * @return <code>true</code> if the pom configuration skip javadoc generation for the project
+     */
+    protected boolean isSkippedJavadoc( MavenProject mavenProject )
+    {
+        String property = mavenProject.getProperties().getProperty( "maven.javadoc.skip" );
+        if ( property != null )
+        {
+            boolean skip = BooleanUtils.toBoolean( property );
+            getLog().debug( "isSkippedJavadoc " + mavenProject + " " + skip );
+            return skip;
+        }
+        final String pluginId = "org.apache.maven.plugins:maven-javadoc-plugin";
+        property = getPluginParameter( mavenProject, pluginId, "skip" );
+        if ( property != null )
+        {
+            boolean skip = BooleanUtils.toBoolean( property );
+            getLog().debug( "isSkippedJavadoc " + mavenProject + " " + skip );
+            return skip;
+        }
+        if ( mavenProject.getParent() != null )
+        {
+            return isSkippedJavadoc( mavenProject.getParent() );
+        }
+        getLog().debug( "isSkippedJavadoc " + mavenProject + " " + false );
+        return false;
+    }
+
 }

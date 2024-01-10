@@ -19,22 +19,17 @@ package org.apache.maven.plugins.javadoc.resolver;
  * under the License.
  */
 
-import static org.codehaus.plexus.util.IOUtil.close;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.AbstractMap;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
 
 import org.apache.maven.artifact.Artifact;
@@ -45,15 +40,16 @@ import org.apache.maven.artifact.resolver.ArtifactNotFoundException;
 import org.apache.maven.artifact.resolver.ArtifactResolutionException;
 import org.apache.maven.artifact.resolver.filter.ArtifactFilter;
 import org.apache.maven.plugins.javadoc.AbstractJavadocMojo;
+import org.apache.maven.plugins.javadoc.JavadocModule;
 import org.apache.maven.plugins.javadoc.JavadocUtil;
 import org.apache.maven.plugins.javadoc.ResourcesBundleMojo;
 import org.apache.maven.plugins.javadoc.options.JavadocOptions;
 import org.apache.maven.plugins.javadoc.options.io.xpp3.JavadocOptionsXpp3Reader;
 import org.apache.maven.project.MavenProject;
 import org.apache.maven.shared.artifact.filter.resolve.transform.ArtifactIncludeFilterTransformer;
-import org.apache.maven.shared.artifact.resolve.ArtifactResolver;
-import org.apache.maven.shared.artifact.resolve.ArtifactResolverException;
-import org.apache.maven.shared.dependencies.resolve.DependencyResolver;
+import org.apache.maven.shared.transfer.artifact.resolve.ArtifactResolver;
+import org.apache.maven.shared.transfer.artifact.resolve.ArtifactResolverException;
+import org.apache.maven.shared.transfer.dependencies.resolve.DependencyResolver;
 import org.codehaus.plexus.archiver.ArchiverException;
 import org.codehaus.plexus.archiver.UnArchiver;
 import org.codehaus.plexus.archiver.manager.ArchiverManager;
@@ -148,10 +144,10 @@ public final class ResourceResolver extends AbstractLogEnabled
      * @throws ArtifactResolutionException {@link ArtifactResolutionException}
      * @throws ArtifactNotFoundException {@link ArtifactNotFoundException}
      */
-    public Map<String, Collection<String>> resolveDependencySourcePaths( final SourceResolverConfig config )
+    public Collection<JavadocModule> resolveDependencySourcePaths( final SourceResolverConfig config )
         throws ArtifactResolutionException, ArtifactNotFoundException
     {
-        final Map<String, Collection<String>> mappedDirs = new LinkedHashMap<>();
+        final Collection<JavadocModule> mappedDirs = new ArrayList<>();
         
         final Map<String, MavenProject> projectMap = new HashMap<>();
         if ( config.reactorProjects() != null )
@@ -164,25 +160,26 @@ public final class ResourceResolver extends AbstractLogEnabled
 
         final List<Artifact> artifacts = config.project().getTestArtifacts();
 
-        final List<Artifact> forResourceResolution = new ArrayList<>( artifacts.size() );
         for ( final Artifact artifact : artifacts )
         {
             final String key = key( artifact.getGroupId(), artifact.getArtifactId() );
             final MavenProject p = projectMap.get( key );
             if ( p != null )
             {
-                mappedDirs.put( key, resolveFromProject( config, p, artifact ) );
+                mappedDirs.add( new JavadocModule( key, 
+                                                   artifact.getFile(),
+                                                   resolveFromProject( config, p, artifact ) ) );
             }
             else
             {
-                forResourceResolution.add( artifact );
+                JavadocModule m = resolveFromArtifact( config, artifact );
+                if ( m != null )
+                {
+                    mappedDirs.add( m );
+                }
             }
         }
 
-        for ( Map.Entry<String, String> entry : resolveFromArtifacts( config, forResourceResolution ) )
-        {
-            mappedDirs.put( entry.getKey(), Collections.singletonList( entry.getValue() ) );
-        }
 
         return mappedDirs;
     }
@@ -213,13 +210,10 @@ public final class ResourceResolver extends AbstractLogEnabled
                 continue;
             }
             
-            FileInputStream stream = null;
-            try
+            
+            try ( FileInputStream stream = new FileInputStream( optionsFile ) )
             {
-                stream = new FileInputStream( optionsFile );
                 JavadocOptions options = new JavadocOptionsXpp3Reader().read( stream );
-                stream.close();
-                stream = null;
                 bundles.add( new JavadocBundle( options, new File( project.getBasedir(),
                                                                    options.getJavadocResourcesDirectory() ) ) );
             }
@@ -227,14 +221,8 @@ public final class ResourceResolver extends AbstractLogEnabled
             {
                 IOException error =
                     new IOException( "Failed to read javadoc options from: " + optionsFile + "\nReason: "
-                        + e.getMessage() );
-                error.initCause( e );
-                
+                        + e.getMessage(), e );
                 throw error;
-            }
-            finally
-            {
-                close( stream );
             }
         }
 
@@ -270,35 +258,24 @@ public final class ResourceResolver extends AbstractLogEnabled
             }
         }
 
-        List<String> dirs = new ArrayList<>( toResolve.size() );
+        Collection<Path> dirs = new ArrayList<>( toResolve.size() );
         try
         {
-            for ( Map.Entry<String, String> entry : resolveAndUnpack( toResolve, config, RESOURCE_VALID_CLASSIFIERS,
-                                                                      false ) )
-            {
-                dirs.add( entry.getValue() );
-            }
+            dirs = resolveAndUnpack( toResolve, config, RESOURCE_VALID_CLASSIFIERS, false );
         }
-        catch ( ArtifactResolutionException e )
+        catch ( ArtifactResolutionException | ArtifactNotFoundException e )
         {
             if ( getLogger().isDebugEnabled() )
             {
                 getLogger().debug( e.getMessage(), e );
             }
         }
-        catch ( ArtifactNotFoundException e )
-        {
-            if ( getLogger().isDebugEnabled() )
-            {
-                getLogger().debug( e.getMessage(), e );
-            }
-        }
-        
+
         List<JavadocBundle> result = new ArrayList<>();
 
-        for ( String d : dirs )
+        for ( Path d : dirs )
         {
-            File dir = new File( d );
+            File dir = d.toFile();
             File resources = new File( dir, ResourcesBundleMojo.RESOURCES_DIR_PATH );
             JavadocOptions options = null;
 
@@ -311,9 +288,7 @@ public final class ResourceResolver extends AbstractLogEnabled
                 }
                 catch ( XmlPullParserException e )
                 {
-                    IOException error = new IOException( "Failed to parse javadoc options: " + e.getMessage() );
-                    error.initCause( e );
-                    
+                    IOException error = new IOException( "Failed to parse javadoc options: " + e.getMessage(), e );
                     throw error;
                 }
             }
@@ -324,32 +299,33 @@ public final class ResourceResolver extends AbstractLogEnabled
         return result;
     }
 
-    private Collection<Entry<String, String>> resolveFromArtifacts( final SourceResolverConfig config,
-                                                      final List<Artifact> artifacts )
+    private JavadocModule resolveFromArtifact( final SourceResolverConfig config,
+                                                      final Artifact artifact )
         throws ArtifactResolutionException, ArtifactNotFoundException
     {
-        final List<Artifact> toResolve = new ArrayList<>( artifacts.size() );
+        final List<Artifact> toResolve = new ArrayList<>( 2 );
 
-        for ( final Artifact artifact : artifacts )
+        if ( config.filter() != null
+            && !new ArtifactIncludeFilterTransformer().transform( config.filter() ).include( artifact ) )
         {
-            if ( config.filter() != null
-                && !new ArtifactIncludeFilterTransformer().transform( config.filter() ).include( artifact ) )
-            {
-                continue;
-            }
-
-            if ( config.includeCompileSources() )
-            {
-                toResolve.add( createResourceArtifact( artifact, SOURCES_CLASSIFIER, config ) );
-            }
-
-            if ( config.includeTestSources() )
-            {
-                toResolve.add( createResourceArtifact( artifact, TEST_SOURCES_CLASSIFIER, config ) );
-            }
+            return null;
         }
 
-        return resolveAndUnpack( toResolve, config, SOURCE_VALID_CLASSIFIERS, true );
+        if ( config.includeCompileSources() )
+        {
+            toResolve.add( createResourceArtifact( artifact, SOURCES_CLASSIFIER, config ) );
+        }
+
+        if ( config.includeTestSources() )
+        {
+            toResolve.add( createResourceArtifact( artifact, TEST_SOURCES_CLASSIFIER, config ) );
+        }
+        
+        Collection<Path> sourcePaths = resolveAndUnpack( toResolve, config, SOURCE_VALID_CLASSIFIERS, true ); 
+
+        return new JavadocModule( key( artifact.getGroupId(), artifact.getArtifactId() ),
+                                  artifact.getFile(),
+                                  sourcePaths );
     }
 
     private Artifact createResourceArtifact( final Artifact artifact, final String classifier,
@@ -376,7 +352,7 @@ public final class ResourceResolver extends AbstractLogEnabled
      * @throws ArtifactResolutionException if an exception occurs
      * @throws ArtifactNotFoundException if an exception occurs
      */
-    private Collection<Map.Entry<String, String>> resolveAndUnpack( final List<Artifact> artifacts,
+    private Collection<Path> resolveAndUnpack( final List<Artifact> artifacts,
                                                                     final SourceResolverConfig config,
                                                                     final List<String> validClassifiers,
                                                                     final boolean propagateErrors )
@@ -397,7 +373,7 @@ public final class ResourceResolver extends AbstractLogEnabled
             filter = null;
         }
         
-        final List<Map.Entry<String, String>> result = new ArrayList<>( artifacts.size() );
+        final List<Path> result = new ArrayList<>( artifacts.size() );
         for ( final Artifact a : artifactSet )
         {
             if ( !validClassifiers.contains( a.getClassifier() ) || ( filter != null && !filter.include( a ) ) )
@@ -432,8 +408,7 @@ public final class ResourceResolver extends AbstractLogEnabled
 
                 unArchiver.extract();
 
-                result.add( new AbstractMap.SimpleEntry<String, String>( a.getDependencyConflictId(),
-                                                                         d.getAbsolutePath() ) );
+                result.add( d.toPath().toAbsolutePath() );
             }
             catch ( final NoSuchArchiverException e )
             {
@@ -455,7 +430,7 @@ public final class ResourceResolver extends AbstractLogEnabled
         return result;
     }
 
-    private static Collection<String> resolveFromProject( final SourceResolverConfig config,
+    private static Collection<Path> resolveFromProject( final SourceResolverConfig config,
                                                     final MavenProject reactorProject, final Artifact artifact )
     {
         final List<String> dirs = new ArrayList<>();
@@ -466,19 +441,13 @@ public final class ResourceResolver extends AbstractLogEnabled
             if ( config.includeCompileSources() )
             {
                 final List<String> srcRoots = reactorProject.getCompileSourceRoots();
-                for ( final String root : srcRoots )
-                {
-                    dirs.add( root );
-                }
+                dirs.addAll( srcRoots );
             }
 
             if ( config.includeTestSources() )
             {
                 final List<String> srcRoots = reactorProject.getTestCompileSourceRoots();
-                for ( final String root : srcRoots )
-                {
-                    dirs.add( root );
-                }
+                dirs.addAll( srcRoots );
             }
         }
 

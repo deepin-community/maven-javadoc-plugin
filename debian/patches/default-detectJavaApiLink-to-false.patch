@@ -6,17 +6,14 @@ Forwarded: not-needed
 
 --- a/src/main/java/org/apache/maven/plugins/javadoc/AbstractJavadocMojo.java
 +++ b/src/main/java/org/apache/maven/plugins/javadoc/AbstractJavadocMojo.java
-@@ -587,7 +587,7 @@
-      * <br/>
-      * See
-      * <a href="./apidocs/org/apache/maven/plugin/javadoc/AbstractJavadocMojo.html#DEFAULT_JAVA_API_LINKS">Javadoc</a>
--     * for the default values.
-+     * for the default values.  For Debian, the default value is <code>false</code>.  See <a href="https://bugs.debian.org/919798">Debian bug 919798</a>.
-      * <br/>
+@@ -564,11 +564,13 @@
+      * (defined in <code>${project.build.plugins}</code> or in <code>${project.build.pluginManagement}</code>),
+      * or try to compute it from the {@code javadocExecutable} version.
       *
++     * <p>For Debian, the default value is <code>false</code>.  See <a href="https://bugs.debian.org/919798">Debian bug 919798</a>.</p>
++     *
       * @see #links
-@@ -595,7 +595,7 @@
-      * @see #DEFAULT_JAVA_API_LINKS
+      * @see #javaApiLinks
       * @since 2.6
       */
 -    @Parameter( property = "detectJavaApiLink", defaultValue = "true" )

@@ -3,7 +3,7 @@ Author: Emmanuel Bourg <ebourg@apache.org>
 Forwarded: not-needed
 --- a/src/main/java/org/apache/maven/plugins/javadoc/AbstractJavadocMojo.java
 +++ b/src/main/java/org/apache/maven/plugins/javadoc/AbstractJavadocMojo.java
-@@ -984,7 +984,7 @@
+@@ -982,7 +982,7 @@
       *
       * @since 3.0.0
       */

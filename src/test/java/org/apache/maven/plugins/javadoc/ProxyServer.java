@@ -21,7 +21,8 @@ package org.apache.maven.plugins.javadoc;
 
 import java.io.IOException;
 import java.net.InetAddress;
-import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Map;
 
 import javax.servlet.ServletException;
@@ -30,24 +31,24 @@ import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.mortbay.jetty.Connector;
-import org.mortbay.jetty.Server;
-import org.mortbay.jetty.bio.SocketConnector;
-import org.mortbay.jetty.security.B64Code;
-import org.mortbay.jetty.servlet.Context;
-import org.mortbay.jetty.servlet.ServletHolder;
-import org.mortbay.proxy.AsyncProxyServlet;
+import org.eclipse.jetty.proxy.AsyncProxyServlet;
+import org.eclipse.jetty.proxy.ConnectHandler;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.servlet.ServletContextHandler;
+import org.eclipse.jetty.servlet.ServletHolder;
 
 /**
  * A Proxy server.
  *
  * @author <a href="mailto:vincent.siveton@gmail.com">Vincent Siveton</a>
- * @version $Id: ProxyServer.java 1517906 2013-08-27 18:25:03Z krosenvold $
  * @since 2.6
  */
 class ProxyServer
 {
     private Server proxyServer;
+
+    private ServerConnector serverConnector;
 
     /**
      * @param proxyServlet the wanted auth proxy servlet
@@ -60,18 +61,28 @@ class ProxyServer
     /**
      * @param hostName the server name
      * @param port the server port
-     * @param debug true to display System.err, false otherwise.
      * @param proxyServlet the wanted auth proxy servlet
      */
     public ProxyServer( String hostName, int port, AuthAsyncProxyServlet proxyServlet )
     {
-        proxyServer = new Server();
+        proxyServer = new Server( );
 
-        proxyServer.addConnector( getDefaultConnector( hostName, port ) );
+        serverConnector = new ServerConnector( proxyServer );
+        serverConnector.setHost( InetAddress.getLoopbackAddress().getHostName() );
+        serverConnector.setReuseAddress( true );
+        serverConnector.setPort( 0 );
 
-        Context context = new Context( proxyServer, "/", 0 );
+        proxyServer.addConnector( serverConnector );
 
-        context.addServlet( new ServletHolder( proxyServlet ), "/" );
+        // Setup proxy handler to handle CONNECT methods
+        ConnectHandler proxy = new ConnectHandler();
+        proxyServer.setHandler(proxy);
+
+        // Setup proxy servlet
+        ServletContextHandler context = new ServletContextHandler(proxy, "/", true, false);
+        ServletHolder appServletHolder = new ServletHolder(proxyServlet);
+        context.addServlet(appServletHolder, "/*");
+
     }
 
     /**
@@ -79,8 +90,7 @@ class ProxyServer
      */
     public String getHostName()
     {
-        Connector connector = proxyServer.getConnectors()[0];
-        return connector.getHost();
+        return serverConnector.getHost() == null ? InetAddress.getLoopbackAddress().getHostName() : serverConnector.getHost();
     }
 
     /**
@@ -88,8 +98,7 @@ class ProxyServer
      */
     public int getPort()
     {
-        Connector connector = proxyServer.getConnectors()[0];
-        return ( connector.getLocalPort() <= 0 ? connector.getPort() : connector.getLocalPort() );
+        return serverConnector.getLocalPort();
     }
 
     /**
@@ -117,31 +126,6 @@ class ProxyServer
         proxyServer = null;
     }
 
-    private Connector getDefaultConnector( String hostName, int port )
-    {
-        Connector connector = new SocketConnector();
-        if ( hostName != null )
-        {
-            connector.setHost( hostName );
-        }
-        else
-        {
-            try
-            {
-                connector.setHost( InetAddress.getLocalHost().getCanonicalHostName() );
-            }
-            catch ( UnknownHostException e )
-            {
-                // nop
-            }
-        }
-        if ( port > 0 )
-        {
-            connector.setPort( port );
-        }
-
-        return connector;
-    }
 
     /**
      * A proxy servlet with authentication support.
@@ -182,7 +166,6 @@ class ProxyServer
         public AuthAsyncProxyServlet( Map<String, String> authentications, long sleepTime )
         {
             this();
-
             this.authentications = authentications;
             this.sleepTime = sleepTime;
         }
@@ -200,8 +183,10 @@ class ProxyServer
                 String proxyAuthorization = request.getHeader( "Proxy-Authorization" );
                 if ( proxyAuthorization != null && proxyAuthorization.startsWith( "Basic " ) )
                 {
-                    String proxyAuth = proxyAuthorization.substring( 6 );
-                    String authorization = B64Code.decode( proxyAuth );
+                    String proxyAuth = proxyAuthorization.substring("Basic ".length());
+                    String authorization = new String(Base64.getDecoder().decode(proxyAuth), StandardCharsets.UTF_8);
+
+
                     String[] authTokens = authorization.split( ":" );
                     String user = authTokens[0];
                     String password = authTokens[1];

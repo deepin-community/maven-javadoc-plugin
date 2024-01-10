@@ -1,0 +1,58 @@
+Description: Adjust the source/release level automatically for building with recent JDKs
+Author: Emmanuel Bourg <ebourg@apache.org>
+Forwarded: not-needed
+--- a/src/main/java/org/apache/maven/plugins/javadoc/AbstractJavadocMojo.java
++++ b/src/main/java/org/apache/maven/plugins/javadoc/AbstractJavadocMojo.java
+@@ -158,6 +158,32 @@
+ public abstract class AbstractJavadocMojo
+     extends AbstractMojo
+ {
++    private List<String> unsupportedLanguageLevels = getUnsupportedLanguageLevels();
++
++    private static List<String> getUnsupportedLanguageLevels() {
++         if ( isAtLeastJava21() ) {
++            return java.util.Arrays.asList( new String[]{"1.1", "1.2", "1.3", "1.4", "1.5", "5", "1.6", "6", "1.7", "7"} );
++         }
++         return java.util.Arrays.asList( new String[]{"1.1", "1.2", "1.3", "1.4", "1.5", "5", "1.6", "6"} );
++    }
++
++    private static boolean isAtLeastJava21()
++    {
++        try
++        {
++            return Integer.parseInt( System.getProperty( "java.specification.version" ) ) >= 21;
++        }
++        catch ( Exception e )
++        {
++            return false;
++        }
++    }
++
++    private String getMinRelease()
++    {
++        return isAtLeastJava21() ? "8" : "7";
++    }
++
+     /**
+      * Classifier used in the name of the javadoc-options XML file, and in the resources bundle
+      * artifact that gets attached to the project. This one is used for non-test javadocs.
+@@ -2028,6 +2054,19 @@
+     public void execute()
+         throws MojoExecutionException, MojoFailureException
+     {
++	    String defaultLevel = getMinRelease();
++        if ( unsupportedLanguageLevels.contains( release ) )
++        {
++            System.err.println( "Use of release " + release + " is no longer supported, switching to " + defaultLevel );
++            release = defaultLevel;
++        }
++
++        if ( unsupportedLanguageLevels.contains( source ) )
++        {
++            System.err.println( "Use of source " + source + " is no longer supported, switching to " + defaultLevel );
++            source = defaultLevel;
++        }
++
+         verifyRemovedParameter( "aggregator" );
+         verifyRemovedParameter( "proxyHost" );
+         verifyRemovedParameter( "proxyPort" );

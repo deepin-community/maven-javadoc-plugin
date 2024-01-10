@@ -6,5 +6,5 @@ org.apache.maven maven-model      jar s/.*/3.x/ * *
 org.apache.maven maven-settings   jar s/.*/3.x/ * *
 org.apache.maven maven-plugin-api jar s/.*/3.x/ * *
 org.apache.maven maven-artifact   jar s/.*/3.x/ * *
+org.apache.maven.plugins maven-plugins pom s/.*/debian/ * *
 org.apache.maven.reporting maven-reporting-api * s/.*/3.x/ * *
-org.codehaus.plexus plexus-utils  jar s/.*/2.x/ * *
