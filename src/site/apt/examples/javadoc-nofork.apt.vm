@@ -70,4 +70,5 @@ Generate Javadoc without duplicate execution of phase generate-sources.
 </project>
 +-----+
 
- <<Note>>: These reports may not be used for aggregate reports.
+ <<Note>>: These reports may not be used for aggregate reports. For those, see the example of
+     {{{./aggregate-nofork.html}generating aggregate Javadocs without execution of phase compile}}.

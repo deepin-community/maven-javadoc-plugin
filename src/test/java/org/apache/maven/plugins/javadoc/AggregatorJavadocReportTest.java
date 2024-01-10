@@ -24,6 +24,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
 
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.model.Plugin;
@@ -31,9 +32,11 @@ import org.apache.maven.plugin.MojoExecution;
 import org.apache.maven.plugin.testing.AbstractMojoTestCase;
 import org.apache.maven.plugin.testing.stubs.MavenProjectStub;
 import org.apache.maven.project.MavenProject;
+import org.codehaus.plexus.languages.java.version.JavaVersion;
 import org.codehaus.plexus.util.FileUtils;
-import org.sonatype.aether.impl.internal.SimpleLocalRepositoryManager;
-import org.sonatype.aether.util.DefaultRepositorySystemSession;
+import org.eclipse.aether.DefaultRepositorySystemSession;
+import org.eclipse.aether.internal.impl.SimpleLocalRepositoryManagerFactory;
+import org.eclipse.aether.repository.LocalRepository;
 
 public class AggregatorJavadocReportTest
     extends AbstractMojoTestCase
@@ -68,14 +71,14 @@ public class AggregatorJavadocReportTest
 
         MojoExecution mojoExec = new MojoExecution( new Plugin(), "aggregate", null );
         setVariableValueToObject( mojo, "mojo", mojoExec );
-        
+
         MavenProject currentProject = new MavenProjectStub();
         currentProject.setGroupId( "GROUPID" );
         currentProject.setArtifactId( "ARTIFACTID" );
-        
+
         MavenSession session = newMavenSession( currentProject );
         DefaultRepositorySystemSession repoSysSession = (DefaultRepositorySystemSession) session.getRepositorySession();
-        repoSysSession.setLocalRepositoryManager( new SimpleLocalRepositoryManager( localRepo ) );
+        repoSysSession.setLocalRepositoryManager( new SimpleLocalRepositoryManagerFactory().newInstance( repoSysSession, new LocalRepository( localRepo ) ) );
         setVariableValueToObject( mojo, "session", session );
 
         return mojo;
@@ -169,21 +172,14 @@ public class AggregatorJavadocReportTest
     private static String readFile( File file )
         throws IOException
     {
-        String strTmp;
         StringBuilder str = new StringBuilder( (int) file.length() );
-        BufferedReader in = new BufferedReader( new FileReader( file ) );
 
-        try
-        {
-            while ( ( strTmp = in.readLine() ) != null )
-            {
+        try (BufferedReader in = new BufferedReader(new FileReader(file))) {
+
+            for ( String strTmp ; ( strTmp = in.readLine() ) != null ; ) {
                 str.append( LINE_SEPARATOR );
                 str.append( strTmp );
             }
-        }
-        finally
-        {
-            in.close();
         }
 
         return str.toString();
@@ -231,9 +227,10 @@ public class AggregatorJavadocReportTest
         File apidocs = new File( getBasedir(), "target/test/unit/aggregate-resources-test/target/site/apidocs" );
 
         // Test overview
-        File overviewSummary = new File( apidocs, "overview-summary.html" );
+        File overviewSummary = getOverviewSummary(apidocs);
+
         assertTrue( overviewSummary.exists() );
-        String overview = readFile( overviewSummary ).toLowerCase();
+        String overview = readFile( overviewSummary ).toLowerCase( Locale.ENGLISH );
         assertTrue( overview.contains( "<a href=\"resources/test/package-summary.html\">resources.test</a>" ) );
         assertTrue( overview.contains( ">blabla</" ) );
         assertTrue( overview.contains( "<a href=\"resources/test2/package-summary.html\">resources.test2</a>" ) );
@@ -247,4 +244,25 @@ public class AggregatorJavadocReportTest
         assertTrue( overview.contains( "<img src=\"doc-files/maven-feather.png\" alt=\"Maven\">" ) );
         assertTrue( new File( apidocs, "resources/test/doc-files/maven-feather.png" ).exists() );
     }
+
+    public void testAggregateWithModulsNotInSubFolders() throws Exception
+    {
+      File testPom = new File( unit, "aggregate-modules-not-in-subfolders-test/all/pom.xml");
+      JavadocReport mojo = lookupMojo( testPom );
+      mojo.execute();
+
+      File apidocs = new File( getBasedir(), "target/test/unit/aggregate-modules-not-in-subfolders-test/target/site/apidocs" );
+      assertTrue( apidocs.isDirectory() );
+      assertTrue( getOverviewSummary( apidocs ).isFile() );
+    }
+
+    private static File getOverviewSummary(File apidocs)
+    {
+      if ( JavaVersion.JAVA_SPECIFICATION_VERSION.isBefore( "11" ) )
+      {
+          return new File( apidocs, "overview-summary.html" );
+      }
+      return new File( apidocs, "index.html" );
+    }
+
 }

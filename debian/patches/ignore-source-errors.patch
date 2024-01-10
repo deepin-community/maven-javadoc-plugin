@@ -3,8 +3,8 @@ Author: Emmanuel Bourg <ebourg@apache.org>
 Forwarded: no
 --- a/src/main/java/org/apache/maven/plugins/javadoc/AbstractJavadocMojo.java
 +++ b/src/main/java/org/apache/maven/plugins/javadoc/AbstractJavadocMojo.java
-@@ -4859,6 +4859,13 @@
-                 arguments.add( option );
+@@ -5525,6 +5525,13 @@
+                 arguments.add( additionalOption.replaceAll( "(?<!\\\\)\\\\(?!\\\\|:)", "\\\\" ) );
              }
          }
 +
@@ -16,4 +16,4 @@ Forwarded: no
 +        }
      }
  
-     private File findMainDescriptor( Collection<String> roots )
+     private ResolvePathResult getResolvePathResult( File artifactFile )

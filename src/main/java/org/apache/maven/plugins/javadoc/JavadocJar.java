@@ -46,7 +46,6 @@ import java.util.Locale;
  * Bundles the Javadoc documentation for <code>main Java code</code> in an <b>NON aggregator</b> project into
  * a jar using the standard <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/">Javadoc Tool</a>.
  *
- * @version $Id: JavadocJar.java 1752018 2016-07-09 16:35:25Z rfscholte $
  * @since 2.0
  */
 @Mojo( name = "jar", defaultPhase = LifecyclePhase.PACKAGE, requiresDependencyResolution = ResolutionScope.COMPILE,
@@ -175,7 +174,7 @@ public class JavadocJar
             innerDestDir = new File( getOutputDirectory() );
         }
 
-        if ( !( "pom".equalsIgnoreCase( project.getPackaging() ) && isAggregator() ) )
+        if ( !isAggregator() || !"pom".equalsIgnoreCase( project.getPackaging() ) )
         {
             ArtifactHandler artifactHandler = project.getArtifact().getArtifactHandler();
             if ( !"java".equals( artifactHandler.getLanguage() ) )
@@ -266,17 +265,20 @@ public class JavadocJar
         }
 
         MavenArchiver archiver = new MavenArchiver();
+        archiver.setCreatedBy( "Maven Javadoc Plugin", "org.apache.maven.plugins", "maven-javadoc-plugin" );
         archiver.setArchiver( jarArchiver );
         archiver.setOutputFile( javadocJar );
 
-        File contentDirectory = javadocFiles;
-        if ( !contentDirectory.exists() )
+        // configure for Reproducible Builds based on outputTimestamp value
+        archiver.configureReproducibleBuild( outputTimestamp );
+
+        if ( !javadocFiles.exists() )
         {
             getLog().warn( "JAR will be empty - no content was marked for inclusion!" );
         }
         else
         {
-            archiver.getArchiver().addDirectory( contentDirectory, DEFAULT_INCLUDES, DEFAULT_EXCLUDES );
+            archiver.getArchiver().addDirectory( javadocFiles, DEFAULT_INCLUDES, DEFAULT_EXCLUDES );
         }
 
         List<Resource> resources = project.getBuild().getResources();

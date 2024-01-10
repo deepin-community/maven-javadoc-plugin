@@ -31,6 +31,7 @@ import org.codehaus.plexus.archiver.Archiver;
 import org.codehaus.plexus.archiver.ArchiverException;
 import org.codehaus.plexus.archiver.manager.ArchiverManager;
 import org.codehaus.plexus.archiver.manager.NoSuchArchiverException;
+import org.codehaus.plexus.archiver.util.DefaultFileSet;
 
 import java.io.File;
 import java.io.IOException;
@@ -122,20 +123,16 @@ extends AbstractJavadocMojo
             archiver.addFile( optionsFile, BUNDLE_OPTIONS_PATH );
 
             File javadocDir = getJavadocDirectory();
-            if ( javadocDir.exists() && javadocDir.isDirectory() )
+            if ( javadocDir.isDirectory() )
             {
-                archiver.addDirectory( javadocDir, RESOURCES_DIR_PATH + "/" );
+                DefaultFileSet fileSet = DefaultFileSet.fileSet( javadocDir ).prefixed( RESOURCES_DIR_PATH + "/" );
+                archiver.addFileSet( fileSet );
             }
 
             archiver.setDestFile( bundleFile );
             archiver.createArchive();
         }
-        catch ( ArchiverException e )
-        {
-            throw new MojoExecutionException( "Failed to assemble javadoc-resources bundle archive. Reason: "
-                + e.getMessage(), e );
-        }
-        catch ( IOException e )
+        catch ( ArchiverException | IOException e )
         {
             throw new MojoExecutionException( "Failed to assemble javadoc-resources bundle archive. Reason: "
                 + e.getMessage(), e );

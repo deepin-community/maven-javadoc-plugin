@@ -31,7 +31,7 @@ under the License.
         <p>
           All options provided by Sun on the Javadoc homepages are wrapped in the Maven Javadoc Plugin. This
           plugin supports Javadoc 1.4, 1.5 and 6.0 options. Refer you to the
-          <a href="./apidocs/org/apache/maven/plugin/javadoc/package-summary.html">Javadoc Package Summary</a>
+          <a href="./apidocs/org/apache/maven/plugins/javadoc/package-summary.html">Javadoc Package Summary</a>
           for more information and to the <a href="./javadoc-mojo.html">Javadoc Plugin Documentation</a>.
         </p>
       </answer>
@@ -97,7 +97,7 @@ javadoc.exe(or .sh) @options @packages | @argfile]]></source>
           You could need to add more Javadoc parameters to be process by the Javadoc Tool (i.e. for doclet).
         </p>
         <p>
-          For this, you should use the <i>&lt;additionalparam/&gt;</i> parameter in your Javadoc Plugin configuration.
+          For this, you should use the <i>&lt;additionalOptions/&gt;</i> parameter in your Javadoc Plugin configuration.
         </p>
       </answer>
     </faq>

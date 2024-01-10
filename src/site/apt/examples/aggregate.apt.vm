@@ -37,46 +37,49 @@ Project
   |-- pom.xml
   |-- Module1
   |   `-- pom.xml
-  |-- Module2
+  |   `-- Module 2
+  |       `-- pom.xml
+  |   `-- Module 3
+  |       `-- pom.xml
+  |-- Module4
   |   `-- pom.xml
-  `-- Module3
+  `-- Module5
     `-- pom.xml
 
 +-----+
 
-* Using The \<aggregate/\> Parameter (<<deprecated>>)
-
- <<Note>>: {{{../javadoc-mojo.html#aggregate}\<aggregate/\>}} parameter is <<deprecated>> since 2.5. Please use the
- <<<aggregate>>> goal instead of.
-
- The {{{../javadoc-mojo.html#aggregate}\<aggregate/\>}} parameter can be used to generate javadocs for multi-module
- projects. It gives the option to
- generate one javadoc report for the entire project (all modules) or generate one javadoc report for each module.
-
- When you execute javadoc:javadoc from Project directory with aggregate set to <<true>>, a javadoc report will be created
- in the target directory of Project with all the javadocs of Project's modules included. If aggregate is
- set to <<false>> (default), a javadoc report for Module1 will be generated in the target directory of Module1, a javadoc
- report for Module2 will be generated in the target directory of Module2, and a javadoc report for Module3 will be
- generated in the target directory of Module3.
-
+ Since 3.1.0 the <<<aggregate>>> has changed a little bit. It'll generate aggregated 
+ reports at every level.
+ To get only an aggregated project at root level, you need to configure the pom like:
+ 
 +-----+
 <project>
   ...
-  <reporting> (or <build>)
+  <reporting>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-javadoc-plugin</artifactId>
         <version>${project.version}</version>
-        <configuration>
-          ...
-          <aggregate>true</aggregate>
-          ...
-        </configuration>
+        <reportSets>
+          <reportSet>
+            <id>aggregate</id>
+            <inherited>false</inherited>        
+            <reports>
+              <report>aggregate</report>
+            </reports>
+          </reportSet>
+          <reportSet>
+            <id>default</id>
+            <reports>
+              <report>javadoc</report>
+            </reports>
+          </reportSet>
+        </reportSets>
       </plugin>
     </plugins>
     ...
-  </reporting> (or </build>)
+  </reporting>
   ...
 </project>
 +-----+
@@ -167,6 +170,44 @@ Project
   </reporting>
   ...
 </project>
++-----+
+
+* Aggregating Javadocs For Modularized projects
+
+  Since Java 9 it is possible to add module descriptors to your projects, which can have an impact on the generated reports.
+  Be aware that is not possible to have a mixture of named and unnamed modules. Ideally every Maven module has a Java module descriptor,
+  but this is not always possible, e.g. due to split packages of dependencies.
+  In such case you must have a jar containing a <<<META-INF/MANIFEST.MF>>> with an entry for the <<<Automatic-Module-Name>>>.
+  In other words: ensure to call <<<package javadoc:aggregate>>>, because the manifest file is only being read from jar, not from folder.
+  
++-----+
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <configuration>
+            <archive>
+              <manifestEntries>
+                <Automatic-Module-Name>com.foo.bar</Automatic-Module-Name>
+              </manifestEntries>
+            </archive>
+          </configuration>
+        </plugin>  
++-----+
+
+  Occasionally, automatic modules need to import named modules. For example,
+
++-----+
+        error: package org.w3c.dom is not visible
+        (package org.w3c.dom is declared in module java.xml, but module foobar does not read it)
++-----+
+
+  can be solved by adding the relevant --add-modules options to the plugin configuration:
+
++-----+
+        <additionalOptions>
+          <option>--add-modules</option>
+          <option>java.xml</option>
+        </additionalOptions>
 +-----+
 
  The Javadoc plugin contains several <<<aggregate>>> goals to be use with an aggregator project. Here is the full list

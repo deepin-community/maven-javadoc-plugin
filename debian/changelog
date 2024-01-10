@@ -1,3 +1,38 @@
+maven-javadoc-plugin (3.4.1-3) unstable; urgency=medium
+
+  * Team upload.
+
+  [ Vladimir Petko ]
+  * Bug#1040374: maven-javadoc-plugin: Please support Java 21
+
+  [ tony mancill ]
+  * Set Rules-Requires-Root: no in debian/control
+
+ -- tony mancill <tmancill@debian.org>  Sun, 30 Jul 2023 21:06:58 -0700
+
+maven-javadoc-plugin (3.4.1-2) unstable; urgency=medium
+
+  * Team upload.
+  * Adjust the source level automatically (Closes: #981967)
+  * Standards-Version updated to 4.6.2
+
+ -- Emmanuel Bourg <ebourg@apache.org>  Mon, 16 Jan 2023 09:28:52 +0100
+
+maven-javadoc-plugin (3.4.1-1) unstable; urgency=medium
+
+  * Team upload.
+  * New upstream release
+    - Refreshed the patches
+    - New dependency on libcommons-text-java
+    - Depend on doxia (>= 1.11) (Closes: #1028232)
+    - Depend on libplexus-languages-java (>= 1.1)
+    - Updated the maven-debian-helper rules
+  * Remove constraints unnecessary since buster (oldstable)
+  * Depend on libmaven-parent-java (Closes: #1026511)
+  * Standards-Version updated to 4.6.1
+
+ -- Emmanuel Bourg <ebourg@apache.org>  Mon, 09 Jan 2023 10:28:29 +0100
+
 maven-javadoc-plugin (3.0.1-4) unstable; urgency=medium
 
   * Team upload.

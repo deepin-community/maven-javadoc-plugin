@@ -19,51 +19,50 @@ package org.apache.maven.plugins.javadoc;
  * under the License.
  */
 
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertEquals;
-
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.maven.plugins.javadoc.JavadocVersion;
 import org.junit.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class JavadocVersionTest
 {
     /**
      * Parsing is lazy, only triggered when comparing
-     * 
-     * @throws Exception
      */
     @Test
-    public void testParse() throws Exception
+    @SuppressWarnings("deprecation")
+    public void testParse()
     {
-        assertTrue( JavadocVersion.parse( "1.4" ).compareTo( JavadocVersion.parse( "1.4.2" ) ) < 0 );
-        assertTrue( JavadocVersion.parse( "1.4" ).compareTo( JavadocVersion.parse( "1.5" ) ) < 0 );
-        assertTrue( JavadocVersion.parse( "1.8" ).compareTo( JavadocVersion.parse( "9" ) ) < 0 );
+        assertThat( JavadocVersion.parse( "1.4" ) )
+                .isLessThan( JavadocVersion.parse( "1.4.2" ) )
+                .isLessThan( JavadocVersion.parse( "1.5" ) );
 
-        assertTrue( JavadocVersion.parse( "1.4" ).compareTo( JavadocVersion.parse( "1.4" ) ) == 0 );
-        assertTrue( JavadocVersion.parse( "1.4.2" ).compareTo( JavadocVersion.parse( "1.4.2" ) ) == 0 );
-        assertTrue( JavadocVersion.parse( "9" ).compareTo( JavadocVersion.parse( "9" ) ) == 0 );
+        assertThat( JavadocVersion.parse( "1.8" ) ).isLessThan( JavadocVersion.parse( "9" ) );
 
-        assertTrue( JavadocVersion.parse( "1.4.2" ).compareTo( JavadocVersion.parse( "1.4" ) ) > 0 );
-        assertTrue( JavadocVersion.parse( "1.5" ).compareTo( JavadocVersion.parse( "1.4" ) ) > 0 );
-        assertTrue( JavadocVersion.parse( "9" ).compareTo( JavadocVersion.parse( "1.8" ) ) > 0 );
+        assertThat( JavadocVersion.parse( "1.4" ) ).isEqualByComparingTo( JavadocVersion.parse( "1.4" ) );
+        assertThat( JavadocVersion.parse( "1.4.2" ) ).isEqualByComparingTo( JavadocVersion.parse( "1.4.2" ) );
+        assertThat( JavadocVersion.parse( "9" ) ).isEqualByComparingTo( JavadocVersion.parse( "9" ) );
+
+        assertThat( JavadocVersion.parse( "1.4.2" ) ).isGreaterThan( JavadocVersion.parse( "1.4" ) );
+        assertThat( JavadocVersion.parse( "1.5" ) ).isGreaterThan( JavadocVersion.parse( "1.4" ) );
+        assertThat( JavadocVersion.parse( "9" ) ).isGreaterThan( JavadocVersion.parse( "1.8" ) );
     }
     
     @Test
     public void testApiVersion() {
         Pattern p = Pattern.compile( "(1\\.\\d|\\d\\d*)" );
         Matcher m = p.matcher( "9" );
-        assertTrue(m.find());
-        assertEquals( "9", m.group( 1 ));
+        assertThat( m.find() ).isTrue();
+        assertThat( m.group( 1 ) ).isEqualTo( "9" );
 
         m = p.matcher( "1.4" );
-        assertTrue(m.find());
-        assertEquals( "1.4", m.group( 1 ));
+        assertThat( m.find() ).isTrue();
+        assertThat( m.group( 1 ) ).isEqualTo( "1.4" );
 
         m = p.matcher( "1.4.2" );
-        assertTrue(m.find());
-        assertEquals( "1.4", m.group( 1 ));
+        assertThat( m.find() ).isTrue();
+        assertThat( m.group( 1 ) ).isEqualTo( "1.4" );
     }
 }
