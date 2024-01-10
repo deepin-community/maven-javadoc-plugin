@@ -26,7 +26,10 @@ import java.io.OutputStream;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.URL;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -38,21 +41,23 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.apache.commons.lang3.builder.EqualsBuilder;
-import org.apache.maven.plugins.javadoc.JavadocUtil;
+import org.apache.maven.plugin.testing.stubs.MavenProjectStub;
 import org.apache.maven.plugins.javadoc.ProxyServer.AuthAsyncProxyServlet;
 import org.apache.maven.settings.Proxy;
 import org.apache.maven.settings.Settings;
 import org.codehaus.plexus.PlexusTestCase;
 import org.codehaus.plexus.util.FileUtils;
-import org.mortbay.jetty.Server;
-import org.mortbay.jetty.handler.AbstractHandler;
-import org.mortbay.jetty.handler.MovedContextHandler;
-import org.mortbay.util.ByteArrayISO8859Writer;
+import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.server.handler.AbstractHandler;
+import org.eclipse.jetty.server.handler.MovedContextHandler;
+import org.eclipse.jetty.util.ByteArrayISO8859Writer;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author <a href="mailto:vincent.siveton@gmail.com">Vincent Siveton</a>
- * @version $Id: JavadocUtilTest.java 1801354 2017-07-09 08:49:46Z rfscholte $
  */
 public class JavadocUtilTest
     extends PlexusTestCase
@@ -60,16 +65,14 @@ public class JavadocUtilTest
     /**
      * Method to test the javadoc version parsing.
      *
-     * @throws Exception if any
      */
     public void testParseJavadocVersion()
-        throws Exception
     {
         String version = null;
         try
         {
             JavadocUtil.extractJavadocVersion( version );
-            assertTrue( "Not catch null", false );
+            fail( "Not catch null" );
         }
         catch ( IllegalArgumentException e )
         {
@@ -170,16 +173,14 @@ public class JavadocUtilTest
     /**
      * Method to test the javadoc memory parsing.
      *
-     * @throws Exception if any
      */
     public void testParseJavadocMemory()
-        throws Exception
     {
         String memory = null;
         try
         {
             JavadocUtil.parseJavadocMemory( memory );
-            assertTrue( "Not catch null", false );
+            fail( "Not catch null" );
         }
         catch ( IllegalArgumentException e )
         {
@@ -223,7 +224,7 @@ public class JavadocUtilTest
         try
         {
             JavadocUtil.parseJavadocMemory( memory );
-            assertTrue( "Not catch wrong pattern", false );
+            fail( "Not catch wrong pattern" );
         }
         catch ( IllegalArgumentException e )
         {
@@ -233,7 +234,7 @@ public class JavadocUtilTest
         try
         {
             JavadocUtil.parseJavadocMemory( memory );
-            assertTrue( "Not catch wrong pattern", false );
+            fail( "Not catch wrong pattern" );
         }
         catch ( IllegalArgumentException e )
         {
@@ -244,64 +245,14 @@ public class JavadocUtilTest
     /**
      * Method to test the validate encoding parsing.
      *
-     * @throws Exception if any
      */
     public void testValidateEncoding()
-        throws Exception
     {
         assertFalse( "Not catch null", JavadocUtil.validateEncoding( null ) );
         assertTrue( "UTF-8 not supported on this plateform", JavadocUtil.validateEncoding( "UTF-8" ) );
         assertTrue( "ISO-8859-1 not supported on this plateform", JavadocUtil.validateEncoding( "ISO-8859-1" ) );
         assertFalse( "latin is supported on this plateform???", JavadocUtil.validateEncoding( "latin" ) );
         assertFalse( "WRONG is supported on this plateform???", JavadocUtil.validateEncoding( "WRONG" ) );
-    }
-
-    /**
-     * Method to test the hiding proxy password.
-     *
-     * @throws Exception if any
-     */
-    public void testHideProxyPassword()
-        throws Exception
-    {
-        String cmdLine = "javadoc.exe " + "-J-Dhttp.proxySet=true " + "-J-Dhttp.proxyHost=127.0.0.1 "
-        + "-J-Dhttp.proxyPort=80 " + "-J-Dhttp.nonProxyHosts=\"www.google.com|*.somewhere.com\" "
-        + "-J-Dhttp.proxyUser=\"toto\" " + "-J-Dhttp.proxyPassword=\"toto\" " + "@options @packages";
-        cmdLine = JavadocUtil.hideProxyPassword( cmdLine, null );
-        assertFalse(cmdLine.contains("-J-Dhttp.proxyPassword=\"****\""));
-
-        Settings settings = new Settings();
-        Proxy proxy = new Proxy();
-        proxy.setActive( true );
-        proxy.setHost( "127.0.0.1" );
-        proxy.setPort( 80 );
-        proxy.setProtocol( "http" );
-        proxy.setUsername( "toto" );
-        proxy.setPassword( "toto" );
-        proxy.setNonProxyHosts( "www.google.com|*.somewhere.com" );
-        settings.addProxy( proxy );
-
-        cmdLine = "javadoc.exe " + "-J-Dhttp.proxySet=true " + "-J-Dhttp.proxyHost=127.0.0.1 "
-            + "-J-Dhttp.proxyPort=80 " + "-J-Dhttp.nonProxyHosts=\"www.google.com|*.somewhere.com\" "
-            + "-J-Dhttp.proxyUser=\"toto\" " + "-J-Dhttp.proxyPassword=\"toto\" " + "@options @packages";
-        cmdLine = JavadocUtil.hideProxyPassword( cmdLine, settings );
-        assertTrue(cmdLine.contains("-J-Dhttp.proxyPassword=\"****\""));
-
-        settings = new Settings();
-        proxy = new Proxy();
-        proxy.setActive( true );
-        proxy.setHost( "127.0.0.1" );
-        proxy.setPort( 80 );
-        proxy.setProtocol( "http" );
-        proxy.setUsername( "toto" );
-        proxy.setNonProxyHosts( "www.google.com|*.somewhere.com" );
-        settings.addProxy( proxy );
-
-        cmdLine = "javadoc.exe " + "-J-Dhttp.proxySet=true " + "-J-Dhttp.proxyHost=127.0.0.1 "
-        + "-J-Dhttp.proxyPort=80 " + "-J-Dhttp.nonProxyHosts=\"www.google.com|*.somewhere.com\" "
-        + "-J-Dhttp.proxyUser=\"toto\" " + "-J-Dhttp.proxyPassword=\"toto\" " + "@options @packages";
-        cmdLine = JavadocUtil.hideProxyPassword( cmdLine, null );
-        assertFalse(cmdLine.contains("-J-Dhttp.proxyPassword=\"****\""));
     }
 
     /**
@@ -327,7 +278,7 @@ public class JavadocUtilTest
             assertTrue( true );
         }
 
-        url = new File( getBasedir(), "/pom.xml" ).toURL();
+        url = new File( getBasedir(), "/pom.xml" ).toURI().toURL();
         assertTrue( JavadocUtil.isValidPackageList( url, settings, false ) );
 
         try
@@ -413,10 +364,7 @@ public class JavadocUtilTest
         }
         finally
         {
-            if ( proxyServer != null )
-            {
-                proxyServer.stop();
-            }
+            proxyServer.stop();
         }
 
         // auth proxy
@@ -450,10 +398,7 @@ public class JavadocUtilTest
         }
         finally
         {
-            if ( proxyServer != null )
-            {
-                proxyServer.stop();
-            }
+            proxyServer.stop();
         }
 
         // timeout
@@ -482,10 +427,7 @@ public class JavadocUtilTest
         }
         finally
         {
-            if ( proxyServer != null )
-            {
-                proxyServer.stop();
-            }
+            proxyServer.stop();
         }
 
         // nonProxyHosts
@@ -510,10 +452,7 @@ public class JavadocUtilTest
         }
         finally
         {
-            if ( proxyServer != null )
-            {
-                proxyServer.stop();
-            }
+            proxyServer.stop();
         }
     }
 
@@ -537,12 +476,11 @@ public class JavadocUtilTest
         try
         {
             redirectServer = new Server( 0 );
-            redirectServer.addHandler( new AbstractHandler()
+            redirectServer.setHandler( new AbstractHandler()
             {
                 @Override
-                public void handle( String target, HttpServletRequest request, HttpServletResponse response,
-                                    int dispatch )
-                    throws IOException, ServletException
+                public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response)
+                        throws IOException, ServletException
                 {
                     response.setStatus( HttpServletResponse.SC_OK );
                     ByteArrayISO8859Writer writer = new ByteArrayISO8859Writer( 100 );
@@ -559,12 +497,12 @@ public class JavadocUtilTest
 
             server = new Server( 0 );
             MovedContextHandler handler = new MovedContextHandler();
-            int redirectPort = redirectServer.getConnectors()[0].getLocalPort();
+            int redirectPort = ((ServerConnector)redirectServer.getConnectors()[0]).getLocalPort();
             handler.setNewContextURL( "http://localhost:" + redirectPort );
-            server.addHandler( handler );
+            server.setHandler( handler );
             server.start();
 
-            URL url = new URI( "http://localhost:" + server.getConnectors()[0].getLocalPort() ).toURL();
+            URL url = new URI( "http://localhost:" + ((ServerConnector)redirectServer.getConnectors()[0]).getLocalPort() ).toURL();
             URL redirectUrl = JavadocUtil.getRedirectUrl( url, new Settings() );
 
             assertTrue( redirectUrl.toString().startsWith( "http://localhost:" + redirectPort ) );
@@ -577,6 +515,86 @@ public class JavadocUtilTest
     }
 
     /**
+     * Tests that getRedirectUrl returns the same URL when there are no redirects.
+     */
+    public void testGetRedirectUrlWithNoRedirects()
+        throws Exception
+    {
+        Server server = null;
+        try
+        {
+            server = new Server( 0 );
+            server.setHandler( new AbstractHandler()
+            {
+                @Override
+                public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response)
+                        throws IOException, ServletException
+                {
+                    response.setStatus( HttpServletResponse.SC_OK );
+                    ByteArrayISO8859Writer writer = new ByteArrayISO8859Writer( 100 );
+                    writer.write( "<html>Hello world</html>" );
+                    writer.flush();
+                    response.setContentLength( writer.size() );
+                    OutputStream out = response.getOutputStream();
+                    writer.writeTo( out );
+                    out.close();
+                    writer.close();
+                }
+            } );
+            server.start();
+
+            URL url = new URI( "http://localhost:" + ((ServerConnector)server.getConnectors()[0]).getLocalPort() ).toURL();
+            URL redirectUrl = JavadocUtil.getRedirectUrl( url, new Settings() );
+
+            assertEquals( url.toURI(), redirectUrl.toURI() );
+        }
+        finally
+        {
+            stopSilently( server );
+        }
+    }
+
+    /**
+     * Tests that getRedirectUrl adds an Accept header in HTTP requests. Necessary because some sites like Cloudflare
+     * reject requests without an Accept header.
+     */
+    public void testGetRedirectUrlVerifyHeaders()
+        throws Exception
+    {
+        Server server = null;
+        try
+        {
+            server = new Server( 0 );
+            server.setHandler( new AbstractHandler()
+            {
+                @Override
+                public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response)
+                        throws IOException, ServletException
+                {
+
+                    if ( request.getHeader( "Accept" ) == null )
+                    {
+                        response.setStatus( HttpServletResponse.SC_FORBIDDEN );
+                    }
+                    else
+                    {
+                        response.setStatus( HttpServletResponse.SC_OK );
+                    }
+                    response.getOutputStream().close();
+                }
+            } );
+            server.start();
+
+            URL url = new URI( "http://localhost:" + ((ServerConnector)server.getConnectors()[0]).getLocalPort() ).toURL();
+            JavadocUtil.getRedirectUrl( url, new Settings() );
+        }
+        finally
+        {
+            stopSilently( server );
+        }
+    }
+
+    /**
      * Method to test copyJavadocResources()
      *
      * @throws Exception if any
@@ -585,7 +603,7 @@ public class JavadocUtilTest
         throws Exception
     {
         File input = new File( getBasedir(), "src/test/resources/unit/docfiles-test/docfiles/" );
-        assertTrue( input.exists() );
+        assertThat( input ).exists();
 
         File output = new File( getBasedir(), "target/test/unit/docfiles-test/target/output" );
         if ( output.exists() )
@@ -595,26 +613,17 @@ public class JavadocUtilTest
         assertTrue( output.mkdirs() );
 
         JavadocUtil.copyJavadocResources( output, input, null );
-        List<String> expected = new ArrayList<>();
-        expected.add( "test" + File.separator + "doc-files" + File.separator + "excluded-dir1" + File.separator
-            + "sample-excluded1.gif" );
-        expected.add( "test" + File.separator + "doc-files" + File.separator + "excluded-dir2" + File.separator
-            + "sample-excluded2.gif" );
-        expected.add( "test" + File.separator + "doc-files" + File.separator + "included-dir1" + File.separator
-            + "sample-included1.gif" );
-        expected.add( "test" + File.separator + "doc-files" + File.separator + "included-dir2" + File.separator
-            + "sample-included2.gif" );
-        assertTrue( EqualsBuilder.reflectionEquals( expected, FileUtils.getFiles( output, null, null, false ) ) );
-        expected = new ArrayList<>();
-        expected.add( "" );
-        expected.add( "test" + File.separator + "doc-files" + File.separator + "excluded-dir1" );
-        expected.add( "test" + File.separator + "doc-files" + File.separator + "excluded-dir1" );
-        expected.add( "test" + File.separator + "doc-files" + File.separator + "included-dir1" );
-        expected.add( "test" + File.separator + "doc-files" + File.separator + "included-dir2" );
-        assertTrue( EqualsBuilder.reflectionEquals( expected,
-                                                    FileUtils.getDirectoryNames( new File( output,
-                                                                                           "test/doc-files" ),
-                                                                                 null, null, false ) ) );
+
+        assertThat( FileUtils.getFiles( output, null, null, false ) )
+                .containsExactlyInAnyOrder(
+                    Paths.get( "test", "doc-files", "excluded-dir1", "sample-excluded1.gif" ).toFile(),
+                    Paths.get( "test", "doc-files", "excluded-dir2", "sample-excluded2.gif" ).toFile(),
+                    Paths.get( "test", "doc-files", "included-dir1", "sample-included1.gif" ).toFile(),
+                    Paths.get( "test", "doc-files", "included-dir2", "sample-included2.gif" ).toFile()
+        );
+
+        assertThat( FileUtils.getDirectoryNames( new File( output, "test/doc-files" ), null, null, false ) )
+                .containsExactlyInAnyOrder( "", "excluded-dir1", "excluded-dir2", "included-dir1", "included-dir2" );
 
         input = new File( getBasedir(), "src/test/resources/unit/docfiles-test/docfiles/" );
         assertTrue( input.exists() );
@@ -627,50 +636,43 @@ public class JavadocUtilTest
         assertTrue( output.mkdirs() );
 
         JavadocUtil.copyJavadocResources( output, input, "excluded-dir1:excluded-dir2" );
-        expected = new ArrayList<>();
-        expected.add( "test" + File.separator + "doc-files" + File.separator + "included-dir1" + File.separator
-            + "sample-included1.gif" );
-        expected.add( "test" + File.separator + "doc-files" + File.separator + "included-dir2" + File.separator
-            + "sample-included2.gif" );
-        assertTrue( EqualsBuilder.reflectionEquals( expected, FileUtils.getFiles( output, null, null, false ) ) );
-        expected = new ArrayList<>();
-        expected.add( "" );
-        expected.add( "test" + File.separator + "doc-files" + File.separator + "included-dir1" );
-        expected.add( "test" + File.separator + "doc-files" + File.separator + "included-dir2" );
-        assertTrue( EqualsBuilder.reflectionEquals( expected,
-                                                    FileUtils.getDirectoryNames( new File( output,
-                                                                                           "test/doc-files" ),
-                                                                                 null, null, false ) ) );
+
+        assertThat( FileUtils.getFiles( output, null, null, false ) )
+                .containsExactlyInAnyOrder(
+                    Paths.get( "test", "doc-files", "included-dir1", "sample-included1.gif" ).toFile(),
+                    Paths.get( "test", "doc-files", "included-dir2", "sample-included2.gif" ).toFile()
+                );
+
+        assertThat( FileUtils.getDirectoryNames( new File( output, "test/doc-files" ), null, null, false ) )
+                .containsExactlyInAnyOrder( "", "included-dir1", "included-dir2" );
     }
 
     /**
      * Method to test pruneDirs()
      *
-     * @throws Exception if any
      */
     public void testPruneDirs()
-        throws Exception
     {
         List<String> list = new ArrayList<>();
         list.add( getBasedir() + "/target/classes" );
         list.add( getBasedir() + "/target/classes" );
         list.add( getBasedir() + "/target/classes" );
 
-        String FS = System.getProperty( "file.separator" );
-        Set<String> expected = Collections.singleton( getBasedir() + FS +"target" + FS + "classes" );
+        Set<Path> expected = Collections.singleton( Paths.get( getBasedir(), "target/classes" ) );
+        
+        MavenProjectStub project = new MavenProjectStub();
+        project.setFile( new File( getBasedir(), "pom.xml" ) );
 
-        assertEquals( expected, JavadocUtil.pruneDirs( null, list ) );
+        assertEquals( expected, JavadocUtil.pruneDirs( project, list ) );
     }
 
     /**
      * Method to test unifyPathSeparator()
      *
-     * @throws Exception if any
      */
     public void testUnifyPathSeparator()
-        throws Exception
     {
-        assertEquals( null, JavadocUtil.unifyPathSeparator( null ) );
+        assertNull( JavadocUtil.unifyPathSeparator( null ) );
 
         final String ps = File.pathSeparator;
 
@@ -694,6 +696,18 @@ public class JavadocUtilTest
         assertEquals( path1 + ps + path2, JavadocUtil.unifyPathSeparator( path1 + ":" + path2 ) );
         assertEquals( path1 + ps + path2 + ps + path1 + ps + path2, JavadocUtil.unifyPathSeparator( path1 + ";"
             + path2 + ":" + path1 + ":" + path2 ) );
+    }
+    
+    
+    public void testGetIncludedFiles()
+    {
+        File sourceDirectory = new File("target/it").getAbsoluteFile();
+        String[] fileList = new String[] { "Main.java" };
+        Collection<String> excludePackages = Collections.singleton( "*.it" );
+        
+        List<String> includedFiles = JavadocUtil.getIncludedFiles( sourceDirectory, fileList, excludePackages );
+        
+        assertThat( includedFiles.toArray( new String[0] ) ).isEqualTo( fileList );
     }
 
     private void stopSilently( Server server )

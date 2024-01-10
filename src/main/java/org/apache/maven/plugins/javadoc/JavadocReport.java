@@ -20,11 +20,15 @@ package org.apache.maven.plugins.javadoc;
  */
 
 import java.io.File;
+import java.nio.file.Path;
 import java.util.Collection;
-import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.ResourceBundle;
+import java.util.stream.Collectors;
 
+import org.apache.maven.doxia.sink.Sink;
+import org.apache.maven.doxia.sink.SinkFactory;
 import org.apache.maven.doxia.siterenderer.RenderingContext;
 import org.apache.maven.doxia.siterenderer.sink.SiteRendererSink;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -34,9 +38,8 @@ import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
-import org.apache.maven.reporting.MavenReport;
+import org.apache.maven.reporting.MavenMultiPageReport;
 import org.apache.maven.reporting.MavenReportException;
-import org.codehaus.doxia.sink.Sink;
 import org.codehaus.plexus.util.StringUtils;
 
 /**
@@ -45,7 +48,6 @@ import org.codehaus.plexus.util.StringUtils;
  *
  * @author <a href="mailto:evenisse@apache.org">Emmanuel Venisse</a>
  * @author <a href="mailto:vincent.siveton@gmail.com">Vincent Siveton</a>
- * @version $Id: JavadocReport.java 1800564 2017-07-02 14:08:18Z michaelo $
  * @since 2.0
  * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/javadoc/">Javadoc Tool</a>
  * @see <a href="http://docs.oracle.com/javase/7/docs/technotes/tools/windows/javadoc.html#options">Javadoc Options</a>
@@ -54,7 +56,7 @@ import org.codehaus.plexus.util.StringUtils;
 @Execute( phase = LifecyclePhase.GENERATE_SOURCES )
 public class JavadocReport
     extends AbstractJavadocMojo
-    implements MavenReport
+    implements MavenMultiPageReport
 {
     // ----------------------------------------------------------------------
     // Report Mojo Parameters
@@ -124,7 +126,21 @@ public class JavadocReport
 
     /** {@inheritDoc} */
     @Override
+    public void generate( org.codehaus.doxia.sink.Sink sink, Locale locale )
+        throws MavenReportException
+    {
+        generate( sink, null, locale );
+    }
+
     public void generate( Sink sink, Locale locale )
+        throws MavenReportException
+    {
+        generate( sink, null, locale );
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public void generate( Sink sink, SinkFactory sinkFactory, Locale locale )
         throws MavenReportException
     {
         outputDirectory = getReportOutputDirectory();
@@ -133,15 +149,7 @@ public class JavadocReport
         {
             executeReport( locale );
         }
-        catch ( MavenReportException e )
-        {
-            if ( failOnError )
-            {
-                throw e;
-            }
-            getLog().error( "Error while creating javadoc report: " + e.getMessage(), e );
-        }
-        catch ( RuntimeException e )
+        catch ( MavenReportException | RuntimeException e )
         {
             if ( failOnError )
             {
@@ -170,7 +178,7 @@ public class JavadocReport
      *
      * <br>
      * The logic is the following:
-     * <table summary="Can-generate-report Matrix">
+     * <table><caption>Can-generate-report Matrix</caption>
      *   <tbody>
      *     <tr>
      *       <th> isAggregator </th>
@@ -234,13 +242,15 @@ public class JavadocReport
     {
         boolean canGenerate = false;
 
-        if ( !this.isAggregator() || ( this.isAggregator() && this.project.isExecutionRoot() ) )
+        if ( this.isAggregator() || !"pom".equals( this.project.getPackaging() ) )
         {
-            Collection<String> sourcePaths;
-            List<String> files;
+            Collection<Path> sourcePaths;
+            Map<Path, Collection<String>> files;
             try
             {
-                sourcePaths = collect( getSourcePaths().values() );
+                sourcePaths = getSourcePaths().stream()
+                                .flatMap( e -> e.getSourcePaths().stream() )
+                                .collect( Collectors.toList() );
                 files = getFiles( sourcePaths );
             }
             catch ( MavenReportException e )
@@ -289,7 +299,7 @@ public class JavadocReport
     }
 
     /**
-     * @param theDestDir The destiation directory.
+     * @param theDestDir The destination directory.
      */
     public void setDestDir( String theDestDir )
     {
@@ -321,18 +331,23 @@ public class JavadocReport
             return;
         }
 
+        File outputDirectory = new File( getOutputDirectory() );
+
+        String filename = getOutputName() + ".html";
+
+        Locale locale = Locale.getDefault();
+
         try
         {
-            RenderingContext context = new RenderingContext( outputDirectory, getOutputName() + ".html" );
-            SiteRendererSink sink = new SiteRendererSink( context );
-            Locale locale = Locale.getDefault();
-            generate( sink, locale );
+            // TODO Replace null with real value
+            RenderingContext docRenderingContext = new RenderingContext( outputDirectory, filename, null );
+
+            SiteRendererSink sink = new SiteRendererSink( docRenderingContext );
+
+            generate( sink, null, locale );
+
         }
-        catch ( MavenReportException e )
-        {
-            failOnError( "An error has occurred in " + getName( Locale.ENGLISH ) + " report generation", e );
-        }
-        catch ( RuntimeException e )
+        catch ( MavenReportException | RuntimeException e )
         {
             failOnError( "An error has occurred in " + getName( Locale.ENGLISH ) + " report generation", e );
         }

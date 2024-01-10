@@ -32,7 +32,6 @@ import org.apache.maven.plugin.testing.stubs.MavenProjectStub;
 
 /**
  * @author <a href="mailto:vincent.siveton@gmail.com">Vincent Siveton</a>
- * @version $Id: TagletArtifactsMavenProjectStub.java 1385163 2012-09-15 20:29:11Z hboutemy $
  */
 public class TagletArtifactsMavenProjectStub
     extends MavenProjectStub
@@ -67,7 +66,7 @@ public class TagletArtifactsMavenProjectStub
     public List<ArtifactRepository> getRemoteArtifactRepositories()
     {
         ArtifactRepository repository =
-            new DefaultArtifactRepository( "central", "http://repo.maven.apache.org/maven2",
+            new DefaultArtifactRepository( "central", "https://repo.maven.apache.org/maven2",
                                            new DefaultRepositoryLayout() );
 
         return Collections.singletonList( repository );
